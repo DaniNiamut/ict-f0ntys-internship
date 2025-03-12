@@ -1,0 +1,6 @@
+1. Link to gp_minize: 
+https://scikit-optimize.github.io/stable/modules/generated/skopt.gp_minimize.html
+
+2. Link to Papers:
+   a) on the State of Bayesian Optimization (2022): https://arxiv.org/pdf/2206.03301 
+   b) on (random) dictionary embeddings (2023): https://proceedings.mlr.press/v206/deshwal23a/deshwal23a.pdf and references therein
