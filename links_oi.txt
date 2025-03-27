@@ -1,4 +1,4 @@
-1. Link to gp_minize: 
+np.vstack([train_y_np, black_box_func(candidate_np)])1. Link to gp_minize: 
 https://scikit-optimize.github.io/stable/modules/generated/skopt.gp_minimize.html
 
 2. Link to Papers:
