@@ -19,7 +19,8 @@ def pre_procces_data(file, file_start_rows= 1, file_rows_length = 0, data_cols =
 
 
 
-pre_procces_data('Example Raw data.xlsx', 10, 93, "A:ct")
+pre_procces_data('Example Raw data.xlsx', 10, 93, "A:B")
+
 
 
 
