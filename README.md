@@ -51,4 +51,6 @@ We can choose to interpret $\tau_1,...,\tau_v$ as targets replacing the yield or
 ### Gaussian Process Regression
 After pre-processing, we must differentiate between single-objective and multi-objective optimization. In this section we will explain how we implement single and multiple output gaussian processes.<p>We will change the notation from the previous section to increase clarity.<p>Assume we have $d_\text{in}$ features to predict with and $d_\text{out}$ targets. We will restrict ourselves to some interval for both our features and targets. We denote $I\subseteq\R^{d_\text{in}}$ as our feature-space and $J\subseteq\R^{d_\text{out}}$ as our target-space.<p>We would like to approximate some black box function $f:I\to J$. We do this so that we can optimize this surrogate of $f$. In the context of the Rolfes group, $f$ takes the values of our chemicals as input and outputs either the final yield or information about the yield vs. time graph.<p>
 A valid input to $f$ would be
-$\begin{bmatrix} X \\\ Y \end{bmatrix}$
+```math
+\begin{bmatrix}X\\Y\end{bmatrix}
+```
