@@ -25,7 +25,7 @@ def least_squares_fitter(t_vals,y_vals):
     L = max(y_vals)
     slopes  = np.diff(y_vals) / np.diff(t_vals)
     t0 = max(slopes)
-    z = np.log(L / y_vals - 1 + 1e10)
+    z = np.log((np.clip(L / y_vals - 1, 1e-10, None)))
     X = (t_vals - t0).reshape(-1,1)
 
     model = LinearRegression(fit_intercept=False).fit(X, z)
@@ -42,7 +42,7 @@ def least_squares_fitter(t_vals,y_vals):
     scores.append(score)
 
     #Fitting exponential model
-    z = np.log(y_vals)
+    z = np.log(np.clip(y_vals, 1e-10, None))
     X = t_vals.reshape(-1, 1)
 
     model = LinearRegression().fit(X, z)
@@ -57,14 +57,15 @@ def least_squares_fitter(t_vals,y_vals):
     x0_ind = np.argmax(slopes) - 2
     c = t_vals[x0_ind]
 
-    z = np.log(a - y_vals[x0_ind:] + 1e-5)
+    z = np.log(np.clip(a - y_vals[x0_ind:], 1e-10, None))
+
     X = (t_vals[x0_ind:] - t_vals[x0_ind]).reshape(-1, 1)
     model = LinearRegression().fit(X, z)
 
     b = -model.coef_[0]
 
     y_pred = neg_exp_fn(t_vals,a ,b ,c ,d)
-    score = r2_score(y_vals, y_pred)
+    score = r2_score(y_vals, np.clip(y_pred, -1e10, 1e10))
     params['neg exp'] = (a, b, c, d)
     scores.append(score)
 
@@ -94,7 +95,7 @@ def preprocessor(settings_df, raw_df, pos_wells, override_wells=None, plot=False
     settings_df = settings_df.set_index('well').T.reset_index()
     settings_df.columns.name = None
     settings_df = settings_df.drop(columns='index')
-    time_column = raw_df['Time'].apply(lambda t: (t.hour * 3600 + t.minute * 60 + t.second) / 86400).to_numpy()
+    time_column = raw_df['Time'].apply(lambda t: (t.hour * 3600 + t.minute * 60 + t.second)).to_numpy()
 
     for well in wells:
         params_as_vars = np.zeros(11)
@@ -137,10 +138,11 @@ def preprocessor(settings_df, raw_df, pos_wells, override_wells=None, plot=False
                            for i in range(len(best_fits))]).T
         y_true = raw_df[wells].to_numpy()
         norm_react_rates # use this as red numbers
+        wells #well names
         #norm_react_rates and time_column are 1d numpy arrays.
         #y_fit and y_true are numpy arrays of cols representing wells and rows being time.
 
-        #plot(time_column,y_true, y_fit, norm_react_rates)
+        #plot(time_column,y_true, y_fit, norm_react_rates, wells)
     return settings_df
 
 class MCBayesianOptimization:
