@@ -9,7 +9,7 @@ def linear_fn(t, a, b):
 def exp_fn(t, a, b):
     return a * np.exp(b * t)
 
-def neg_exp_fn(t, a, b, c, d):
+def dec_exp_fn(t, a, b, c, d):
     f = a * (1 - np.exp(-b * t + b * c))
     f[f < d] = d
     return f

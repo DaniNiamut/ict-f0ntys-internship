@@ -1,10 +1,10 @@
 # Bayesian Optimization For Robot Chemistry Lab
 This repository contains implementations of bayesian optimization, data pre-processing, and dimension reduction as functions or classes in Python. The goals are to provide the following implementations such that they are suitable for both individual use and automation in a robot chemistry lab setting:
-1. Function to preprocess data collected by the Rolfes Group.
+1. Function to preprocess data collected by the Roelfes Group.
 2. Single-Objective and Multi-Objective optimizers using Bayesian Optimization.
 3. Dimension reduction implementation which is compatible with the output of the pre-processed function and the input or output of the Single-Objective optimizer.<p>
 
-We also intend to evaluate the performance of our full implementation on a highly dimensional mixed categorical-continuous space representative of the Rolfes Group use case.<p>
+We also intend to evaluate the performance of our full implementation on a highly dimensional mixed categorical-continuous space representative of the Roelfes Group use case.<p>
 ## Context
 ### Fontys Robotlab Research
 The RobotLab program ‘Big Chemistry’ has received over 90 million euros from the National Growth Fund to position the Netherlands as a global leader in chemical robotics combined with artificial intelligence. By building an autonomous ‘RobotLab’, large numbers of experiments can be carried out, yielding large datasets on properties of molecular systems. The aim is to train new algorithms to predict the properties of molecular systems, e.g. solubility, phase separation, critical micelle concentration, smell, toxicity, and reaction rates. <p>
@@ -16,14 +16,14 @@ Mathematically, this problem may be thought of as a problem of optimizating an e
 We reiterate the task of maximizing the yield of some substance while minimizing the amount of ingredients and the time it would take to synthethize that much of that given substance.<p>
 In the upcoming sections we will cover the following topics:
 - what we consider as features and targets.
-- How we pre-process the Rolfes data.
+- How we pre-process the Roelfes data.
 - How we implement Single and Multiple output Gaussian processes in Python.
 - Which acquisition functions we use and the optimizer for it in Python.
 - The manner in which we implement the minimization of the number of ingredients.
 - How we implement Single and Multiple Objective Bayesian Optimization in Python.
 
 ### Pre-processing
-We mentioned that Bayesian optimization would be used to optimize these values, but we must first properly define our samples, features and targets. In this section we will cover this while explaining how we pre-process data for the Rolfes Group.<p>We define our dataset as an excel file consisting of two different sheets. The first sheet should contain the measurement of some substance for $n$ wells in a given well-plate at $m$ different times, as well as the recorded temperature at those times. An example is shown below.
+We mentioned that Bayesian optimization would be used to optimize these values, but we must first properly define our samples, features and targets. In this section we will cover this while explaining how we pre-process data for the Roelfes Group.<p>We define our dataset as an excel file consisting of two different sheets. The first sheet should contain the measurement of some substance for $n$ wells in a given well-plate at $m$ different times, as well as the recorded temperature at those times. An example is shown below.
 |Time|T° Read|$A_1$|...|$A_n$|
 |-------|-------|---|---|---|
 |$t_1$|$T_1$|$A_{1,1}^{\text{time}}$|$\cdots$|$A_{1,n}^{\text{time}}$|
@@ -49,9 +49,24 @@ To conclude on what we set out to define, Our samples are given by $A_1,...,A_n$
 We can choose to interpret $\tau_1,...,\tau_v$ as targets replacing the yield or as additional targets. It is also possible to exclude them entirely if one does not wish to optimize for time.<p>We chose to allow for $v$ time components to be able to research which methods are most effective in using the yield gradient for single or multi objective optimization and prediction purposes.
 
 ### Gaussian Process Regression
-After pre-processing, we must differentiate between single-objective and multi-objective optimization. In this section we will explain how we implement single and multiple output gaussian processes.<p>We will change the notation from the previous section to increase clarity.<p>Assume we have $d_\text{in}$ features to predict with and $d_\text{out}$ targets. We will restrict ourselves to some interval for both our features and targets. We denote $I\subseteq\R^{d_\text{in}}$ as our feature-space and $J\subseteq\R^{d_\text{out}}$ as our target-space.<p>We would like to approximate some black box function $f:I\to J$. We do this so that we can optimize this surrogate of $f$. In the context of the Roelfes group, $f$ takes the values of our chemicals as input and outputs either the final yield or information about the yield vs. time graph.<p>
-A valid input to $f$ would be
-
+After pre-processing, we must differentiate between single-objective and multi-objective optimization. In this section we will explain how we implement single and multiple output gaussian processes.<p>We will change the notation from the previous section to increase clarity.<p>Assume we have $d_\text{in}$ features to predict with and $d_\text{out}$ targets. We will restrict ourselves to some interval for both our features and targets. We denote $I\subseteq\mathbb{R}^{d_\text{in}}$ as our feature-space and $J\subseteq\mathbb{R}^{d_\text{out}}$ as our target-space.<p>We would like to approximate some black box function $f:I\to J$. We do this so that we can optimize this surrogate of $f$. In the context of the Roelfes group, $f$ takes the values of our chemicals as input and $f$ outputs either the final yield or information about the yield vs. time graph.<p>The mathematical representations of the inputs and outputs can be seen below.
 ```math
-x:=\begin{bmatrix}x_{1} \\\vdots \\x_{d_{\text{in}}}\end{bmatrix}\in I \text{ and } f(x):=\begin{bmatrix}f_1(x) \\\vdots \\f_{d_{\text{out}}}(x)\end{bmatrix}
+x:=\begin{bmatrix}x_{1} \\\vdots \\x_{d_{\text{in}}}\end{bmatrix}\in I ,  f(x):=\begin{bmatrix}f_1(x) \\\vdots \\f_{d_{\text{out}}}(x)\end{bmatrix}\in J
 ```
+we start Bayesian Optimization by taking $n$ random samples from $f$. We represent these samples as follows:
+```math
+X_0:=
+\begin{bmatrix}
+x_{1,1}, & \cdots &x_{1,d_{\text{in}}} \\ 
+\vdots &\ddots & \vdots
+\\ x_{n,1} & \cdots & x_{n,d_{\text{in}}}
+\end{bmatrix}
+\in M_{n\times d_{\text{in}}}(\mathbb{R}),
+Y_0:=
+\begin{bmatrix}
+f_1(x_1), & \cdots & f_{d_{\text{out}}}(x_1) \\ 
+\vdots &\ddots & \vdots
+\\f_1(x_n), & \cdots & f_{d_{\text{out}}}(x_n)
+\end{bmatrix}\in M_{n\times d_{\text{out}}}(\mathbb{R})
+```
+Each row in $X_0$ represents one sample. Since we will apply bayesian optimization, we define $X_t$ and $Y_t$ as our matrices denoting our sample at iteration $t$
