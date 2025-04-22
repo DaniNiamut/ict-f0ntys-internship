@@ -133,96 +133,23 @@ def least_squares_fitter(t_vals, y_vals):
 
     return params, scores
 
-def least_squares_dec_exp(t_vals, y_vals):
-    t_vals = np.asarray(t_vals).reshape(-1)
-    y_vals = np.asarray(y_vals).reshape(-1)
-
-    a = np.max(y_vals)
-    d = np.min(y_vals)
-    slopes = np.gradient(y_vals, t_vals)
-    peak_index = np.argmax(slopes)
-    c = t_vals[peak_index]
-
-    y_tail = y_vals[peak_index:]
-    t_tail = t_vals[peak_index:]
-    with np.errstate(divide='ignore'):
-        z = np.log(np.clip(a - y_tail, 1e-10, None))
-    X_tail = (t_tail - c).reshape(-1, 1)
-
-    model = LinearRegression().fit(X_tail, z)
-    b = -model.coef_[0]
-    params = (a, b, c, d)
-    y_pred = dec_exp_fn(t_vals, *params)
-    score = r2_score(y_vals, np.clip(y_pred, -1e10, 1e10))
-    return params, score
-
-def preprocessor(settings_df, raw_df, pos_wells, override_wells=None, plot=False, ):
-    cols = list(raw_df.columns)
-    wells = cols[2:]
-    max_react_rates = []
-    yields = []
-    all_params = []
-    x_fits = []
-
-    settings_df = settings_df.set_index('well').T.reset_index()
-    settings_df.columns.name = None
-    settings_df = settings_df.drop(columns='index')
-    time_column = raw_df['Time'].apply(lambda t: (t.hour * 3600 + t.minute * 60 + t.second)).to_numpy()
-
-    for well in wells:
-        y_vals = raw_df[well].to_numpy()
-
-        ir = IsotonicRegression(increasing=True)
-        x_fit = ir.fit_transform(time_column, y_vals)
-        total_yield = max(y_vals)
-        slopes = np.diff(x_fit) / np.diff(time_column)
-        t0 = max(slopes)
-
-        params, _ = least_squares_dec_exp(time_column, x_fit)
-
-        max_react_rates.append(t0)
-        yields.append(total_yield)
-        all_params.append(params)
-        x_fits.append(x_fit)
-
-    max_react_rates = np.array(max_react_rates)
-    if pos_wells:
-        pos_well_ind = [i for i, col in enumerate(wells) if col in pos_wells]
-        pos_wells_t0 = max_react_rates[pos_well_ind].mean()
-        norm_react_rates = max_react_rates / pos_wells_t0
-    else:
-        norm_react_rates = max_react_rates
-
-    settings_df[['dec_exp_a', 'dec_exp_b', 'dec_exp_c', 'dec_exp_d']] = np.array(all_params)
-    settings_df['norm_yield_grad'] = norm_react_rates
-    settings_df['max_yield'] = yields
-
-    if plot:
-        y_fit = np.array([dec_exp_fn(time_column, *all_params[i])
-                           for i in range(len(all_params))]).T
-        y_true = raw_df[wells].to_numpy()
-        y_filtered = np.array(x_fits).T
-        plot_well_data(time_column, y_true, y_filtered, y_fit, norm_react_rates, wells)
-    return settings_df
-
-def preprocessor_any_func(settings_df, raw_df, pos_wells, override_wells=None, plot=False, ):
-    params_names = ['sigmoid_a', 'sigmoid_b', 'sigmoid_c', 'linear_a', 'linear_b', 'exp_a',
-               'exp_b', 'dec_exp_a', 'dec_exp_b', 'dec_exp_c', 'dec_exp_d']
-    params_indices = {'sigmoid': [0, 1, 2],
-        'linear': [3, 4],
-        'exp': [5, -5],
-        'dec exp': [-4, -3, -2, -1]}
-    params_functs = {'sigmoid': sigmoid_fn,
+def preprocessor(settings_df, raw_df, pos_wells, override_wells=None, plot=False, return_coef=False):
+    # Only keep linear and decaying exponential parameters
+    params_names = ['linear_a', 'linear_b', 'dec_exp_a', 'dec_exp_b', 'dec_exp_c', 'dec_exp_d']
+    params_indices = {
+        'linear': [0, 1],
+        'dec exp': [2, 3, 4, 5]
+    }
+    params_functs = {
         'linear': linear_fn,
-        'exp': exp_fn,
-        'dec exp': dec_exp_fn}
+        'dec exp': dec_exp_fn
+    }
 
     cols = list(raw_df.columns)
     wells = cols[2:]
     max_react_rates = []
     yields = []
     best_fits = []
-    params = {}
     all_params = []
     all_params_lite = []
     x_fits = []
@@ -233,7 +160,7 @@ def preprocessor_any_func(settings_df, raw_df, pos_wells, override_wells=None, p
     time_column = raw_df['Time'].apply(lambda t: (t.hour * 3600 + t.minute * 60 + t.second)).to_numpy()
 
     for well in wells:
-        params_as_vars = np.zeros(11)
+        params_as_vars = np.zeros(6)  # Updated to match new param count
         y_vals = raw_df[well].to_numpy()
 
         ir = IsotonicRegression(increasing=True)
@@ -242,15 +169,19 @@ def preprocessor_any_func(settings_df, raw_df, pos_wells, override_wells=None, p
         slopes = np.diff(x_fit) / np.diff(time_column)
         t0 = max(slopes)
 
+        # Fit and filter only linear and dec_exp
         params, scores = least_squares_fitter(time_column, x_fit)
-        best_fit = list(params.keys())[np.argmax(scores)]
-        params_as_vars[params_indices[best_fit]] = params[best_fit]
+        filtered_params = {k: v for k, v in params.items() if k in ['linear', 'dec exp']}
+        filtered_scores = [scores[i] for i, k in enumerate(params.keys()) if k in ['linear', 'dec exp']]
+        best_fit = list(filtered_params.keys())[np.argmax(filtered_scores)]
+        
+        params_as_vars[params_indices[best_fit]] = filtered_params[best_fit]
 
         max_react_rates.append(t0)
         yields.append(total_yield)
         best_fits.append(best_fit)
         all_params.append(params_as_vars)
-        all_params_lite.append(params[best_fit])
+        all_params_lite.append(filtered_params[best_fit])
         x_fits.append(x_fit)
 
     max_react_rates = np.array(max_react_rates)
@@ -261,7 +192,8 @@ def preprocessor_any_func(settings_df, raw_df, pos_wells, override_wells=None, p
     else:
         norm_react_rates = max_react_rates
 
-    settings_df[params_names] = all_params
+    if return_coef:
+        settings_df[params_names] = all_params
     settings_df['norm_yield_grad'] = norm_react_rates
     settings_df['max_yield'] = yields
     settings_df['function_type'] = best_fits
