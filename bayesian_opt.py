@@ -342,7 +342,7 @@ class BayesianOptimization:
             self.bounds = torch.stack(bounds)
 
         candidate, _ = optimize_acqf(acq_func, bounds=self.bounds, q=q, 
-                                             num_restarts=self.num_restarts, raw_samples=self.raw_samples)
+                                    num_restarts=self.num_restarts, raw_samples=self.raw_samples)
         if believer_mode is False:
             self.acq_func = acq_func
             self.backup_acq_func = acq_func
