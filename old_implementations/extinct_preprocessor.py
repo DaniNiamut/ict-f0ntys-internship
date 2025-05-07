@@ -1,5 +1,5 @@
 #preprocessor but with sigmoid, linear, exp and dec exo
-
+from botorch.sampling import SobolQMCNormalSampler
 def preprocessor(settings_df, raw_df, pos_wells, override_wells=None, plot=False, return_coef=False):
     params_names = ['sigmoid_a', 'sigmoid_b', 'sigmoid_c', 'linear_a', 'linear_b', 'exp_a',
                'exp_b', 'dec_exp_a', 'dec_exp_b', 'dec_exp_c', 'dec_exp_d']

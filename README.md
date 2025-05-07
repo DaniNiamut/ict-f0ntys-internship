@@ -69,4 +69,4 @@ f_1(x_1), & \cdots & f_{d_{\text{out}}}(x_1) \\
 \\f_1(x_n), & \cdots & f_{d_{\text{out}}}(x_n)
 \end{bmatrix}\in M_{n\times d_{\text{out}}}(\mathbb{R})
 ```
-Each row in $X_0$ represents one sample. Since we will apply bayesian optimization, we define $X_t$ and $Y_t$ as our matrices denoting our sample at iteration $t$
+Each row in $X_0$ represents one sample. Since we will apply bayesian optimization, we define $X_t$ and $Y_t$ as matrices containing our samples at a given iteration $t$.

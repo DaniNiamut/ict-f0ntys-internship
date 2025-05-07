@@ -1,5 +1,4 @@
 import numpy as np
-
 def sigmoid_fn(t, a, b, c):
     return a / (1 + np.exp(-b * (t - c)))
 

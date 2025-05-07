@@ -1,23 +1,38 @@
 import torch
-from botorch.models import SingleTaskGP, MixedSingleTaskGP
-from botorch.models.transforms import Normalize, Standardize
-from botorch.fit import fit_gpytorch_mll
-from botorch.acquisition import LogExpectedImprovement, UpperConfidenceBound, ProbabilityOfImprovement
+from botorch.models import SingleTaskGP, MixedSingleTaskGP, SaasFullyBayesianSingleTaskGP, ModelListGP
+
+from botorch.acquisition.analytic import LogExpectedImprovement, UpperConfidenceBound, ProbabilityOfImprovement
 from botorch.acquisition import qLogExpectedImprovement, qUpperConfidenceBound, qProbabilityOfImprovement
-from gpytorch.mlls import ExactMarginalLogLikelihood
+from botorch.acquisition.multi_objective.analytic import ExpectedHypervolumeImprovement
+from botorch.acquisition.multi_objective.monte_carlo import qExpectedHypervolumeImprovement
+
 from botorch.optim import optimize_acqf
 import numpy as np
 import matplotlib.pyplot as plt
-from IPython.display import clear_output
-import matplotlib.animation as animation
-from scipy.stats import multivariate_normal
+
+from botorch import fit_fully_bayesian_model_nuts
 import pandas as pd
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score
 from sklearn.isotonic import IsotonicRegression
-from data_generation import sigmoid_fn, linear_fn, exp_fn, log_fn, yield_time_x, dec_exp_fn
+from data_generation import sigmoid_fn, linear_fn, exp_fn, dec_exp_fn
 import string
-from scipy.optimize import curve_fit
+
+from botorch.utils.multi_objective.box_decompositions.dominated import DominatedPartitioning
+
+def general_saasbo_gp(X, Y):
+    models_list = []
+    for i in range(Y.shape[1]):
+        model = SaasFullyBayesianSingleTaskGP(X, Y[:,i].reshape(-1,1))
+        fit_fully_bayesian_model_nuts(model, disable_progbar=True)
+        models_list.append(model)
+    if len(models_list)> 1:
+        models_list = tuple(models_list)
+        gp = ModelListGP(*models_list)
+    else:
+        gp = models_list[0]
+    return gp
+
 
 def plot_well_data(time_column, y_true, y_filtered, y_fit, norm_react_rates, wells):
     max_row = max(w[0] for w in wells)
@@ -73,7 +88,7 @@ def least_squares_fitter(t_vals, y_vals):
     params = {}
     scores = []
 
-    # Sigmoid approximation
+# Sigmoid approximation
     L = np.max(y_vals)
     with np.errstate(divide='ignore', invalid='ignore'):
         y_ratio = np.clip(L / y_vals - 1, 1e-10, None)
@@ -206,11 +221,11 @@ def preprocessor(settings_df, raw_df, pos_wells, override_wells=None, plot=False
         plot_well_data(time_column, y_true, y_filtered, y_fit, norm_react_rates, wells)
     return settings_df
 
-class MCBayesianOptimization:
+class BayesianOptimization:
     """
-    Monte-Carlo based single-objective bayesian optimization.
+    Bayesian optimization.
 
-    MCBayesianOptimization fits a Gaussian process regressor to suggest
+    BayesianOptimization fits a Gaussian process regressor to suggest
     candidate points for a following iteration. It does this as a middle-man
     between NumPy and PyTorch while attempting to resemble sklearn regressors
     in terms of user interaction.
@@ -220,6 +235,12 @@ class MCBayesianOptimization:
     gp_mean
     gp_cov
     gp
+    ucb_hyperparam
+    num_restarts
+    raw_samples
+    var_names
+    train_x
+    train_y
 
     """
 
@@ -231,7 +252,26 @@ class MCBayesianOptimization:
         self.num_restarts = 5
         self.raw_samples = 20
 
-    def fit(self, X, y, cat_dims=None, kernel=None):
+    def _build_model(self, train_x, train_y, believer_mode=False):
+        self.partitioning = 0
+        if len(self.y_names) > 1:
+            self.partitioning = DominatedPartitioning(
+                ref_point=torch.tensor(self.ref_point),
+                Y=train_y)
+
+        gp_dict = {'Single-Task GP':[SingleTaskGP,
+                            {'covar_module':None}],
+            'Mixed Single-Task GP':[MixedSingleTaskGP,
+                            {'cat_dims':self.cat_dims, 'cont_kernel_factory':None}],
+            'SAASBO':[general_saasbo_gp, dict()]}
+
+        if believer_mode is False:
+            self.gp = gp_dict[self.model_type][0](train_x, train_y, **gp_dict[self.model_type][1])
+            self.backup_gp = gp_dict[self.model_type][0](train_x, train_y, **gp_dict[self.model_type][1])
+        else:
+            self.gp = gp_dict[self.model_type][0](train_x, train_y, **gp_dict[self.model_type][1])
+
+    def fit(self, X, y, optim_direc=None, cat_dims=None, model_type=None,kernel=None):
         """
         Parameters
         ----------
@@ -239,65 +279,130 @@ class MCBayesianOptimization:
 
         y : list of strings of the names corresponding to the columns for target data found in X.
 
+        optim_direc : list of strings or weights as floats with len(y). strings should be 'min' or 'max' to show whether we minimize or maximize this target. If left empty, all targets will be maximized.
+
         cat_dims : list of names corresponding to the columns of the input X that should be considered categorical features.
         
+        Currently accounts for mixed spaces and continuous spaces.
         """
+        self.optim_direc = optim_direc
         train_x = X.drop(y, axis=1)
         self.var_names = list(train_x.columns)
         train_y = X[y]
+        if optim_direc:
+            weights = [
+                1 if val == "max" else -1 if val == "min" else val
+                for val in optim_direc
+            ]
+            train_y = train_y.mul(weights, axis='columns')
+
+        if (model_type is None or model_type == 'Mixed Single-Task GP') and cat_dims:
+            model_type = 'Mixed Single-Task GP'
+            cat_dims = [self.var_names.index(v) for v in cat_dims]
+        elif model_type != 'Mixed Single-Task GP' and cat_dims:
+            dummies = pd.get_dummies(X[cat_dims], columns=cat_dims).astype(int)
+            train_x = pd.concat([X.drop(columns=cat_dims), dummies], axis=1)
+            self.var_names = list(train_x.columns)
+            cat_dims = [self.var_names.index(col) for col in dummies.columns]
+        else:
+            model_type = 'Single-Task GP'
+
         train_x = train_x.to_numpy().reshape(-1,np.shape(train_x)[1])
         train_y = train_y.to_numpy().reshape(-1,np.shape(train_y)[1])
+        self.ref_point = train_y.min(axis=0)
         self.train_x = torch.tensor(train_x)
         self.train_y = torch.tensor(train_y)
         self.y_names = y
-
-        if cat_dims:
-            cat_dims = [self.var_names.index(v) for v in cat_dims]
-            self.gp = MixedSingleTaskGP(self.train_x, self.train_y, cat_dims=cat_dims, cont_kernel_factory=kernel)
-        else:
-            self.gp = SingleTaskGP(
-                train_X=self.train_x,
-                train_Y=self.train_y,
-                input_transform=Normalize(d=np.shape(self.train_x)[1]),
-                outcome_transform=Standardize(m=1),
-                covar_module=kernel
-            )
+        self.model_type = model_type
+        self.cat_dims = cat_dims
+        self._build_model(self.train_x, self.train_y)
 
         return self
     
-    def candidates(self, q, acq_func_name='LogEI', bounds=None, export_df=False):
-        """
-        Optimizes an acquisition function to return candidates
-        """
+    def _acqf_optimizer(self, train_x, train_y, q, bounds, believer_mode=False):
         acq_dict = {
-        'LogEI': [LogExpectedImprovement, self.train_y.max()],
-        'UCB': [UpperConfidenceBound, 0.1],
-        'LogPI': [ProbabilityOfImprovement, self.train_y.max()],
-        }
-        q_acq_dict = {
-        'LogEI': [qLogExpectedImprovement, self.train_y.max()],
-        'UCB': [qUpperConfidenceBound, 0.1],
-        'LogPI': [qProbabilityOfImprovement, self.train_y.max()],
+        'LogEI': [LogExpectedImprovement, {'best_f':train_y.max()}],
+        'UCB': [UpperConfidenceBound, {'beta':self.ucb_hyperparam}],
+        'LogPI': [ProbabilityOfImprovement, {'best_f':train_y.max()}],
+        'qLogEI': [qLogExpectedImprovement, {'best_f':train_y.max()}],
+        'qUCB': [qUpperConfidenceBound, {'beta':self.ucb_hyperparam}],
+        'qLogPI': [qProbabilityOfImprovement, {'best_f':self.train_y.max()}],
+        'EHVI' : [ExpectedHypervolumeImprovement, {'ref_point': self.ref_point,
+                                                    'partitioning': self.partitioning}],
+        'qEHVI' : [qExpectedHypervolumeImprovement, {'ref_point': self.ref_point,
+                                                    'partitioning': self.partitioning}]
         }
 
-        if q > 1:
-            self.acq_func = q_acq_dict[acq_func_name][0](self.gp, acq_dict[acq_func_name][1])
-        else:
-            self.acq_func = acq_dict[acq_func_name][0](self.gp, acq_dict[acq_func_name][1])
+        acq_func = acq_dict[self.acq_func_name][0](self.gp, **acq_dict[self.acq_func_name][1])
 
         if bounds:
             self.bounds = torch.tensor(bounds)
         else:
-            bounds = (torch.min(self.train_x, 0)[0], torch.max(self.train_x, 0)[0])
+            bounds = (torch.min(train_x, 0)[0], torch.max(train_x, 0)[0])
             self.bounds = torch.stack(bounds)
 
-        candidate, _ = optimize_acqf(self.acq_func, bounds=self.bounds, q=q, 
+        candidate, _ = optimize_acqf(acq_func, bounds=self.bounds, q=q, 
                                              num_restarts=self.num_restarts, raw_samples=self.raw_samples)
+        if believer_mode is False:
+            self.acq_func = acq_func
+            self.backup_acq_func = acq_func
+        else:
+            self.acq_func = acq_func
+        return candidate, _
+
+    def _predict(self, X):
+        if (len(self.y_names) == 1 and self.model_type == 'SAASBO'):
+            prediction = self.gp.posterior(X).mean.mean(dim=0)
+        elif (len(self.y_names) > 1 and self.model_type == 'SAASBO'):
+            preds = []
+            for model_ind in range(len(self.y_names)):
+                pred = self.gp.models[model_ind].posterior(X).mean.mean(dim=0)
+                preds.append(pred)
+            prediction = torch.cat(preds, dim=1)
+        else:
+            prediction = self.gp.posterior(X).mean
+        return prediction
         
-        prediction = self.gp.posterior(candidate).mean
+    def candidates(self, q, acq_func_name=None, bounds=None, export_df=False, q_sampling_method=None):
+        """
+        Optimizes an acquisition function to return candidates
+        q_sampling_method : If None, Monte Carlo will be chosen if q>1 
+        and the analytic method will be chosen for q=1. ["Monte Carlo", "Believer", "Thompson"]
+        """ 
+
+        if acq_func_name is None and len(self.y_names) > 1:
+            acq_func_name = 'EHVI'
+        elif acq_func_name is None and len(self.y_names) == 1:
+            acq_func_name = 'LogEI'
+
+        analytic_iter_n = 1
+        if q_sampling_method is None and q > 1:
+            acq_func_name = 'q' + acq_func_name
+        elif q_sampling_method == "Monte Carlo":
+            acq_func_name = 'q' + acq_func_name
+        elif (q_sampling_method == "Believer" and q > 1):
+            analytic_iter_n = q - 1
+            q = 1
+        self.acq_func_name = acq_func_name
+
+        candidate, _ = self._acqf_optimizer(self.train_x, self.train_y, q, bounds)
+        prediction = self._predict(candidate)
+
+        if q_sampling_method=="Believer":
+            all_candidates = candidate
+            all_predictions = prediction
+            for _ in range(analytic_iter_n):
+                retrain_y = torch.cat((self.train_y, prediction))
+                retrain_x = torch.cat((self.train_x, candidate))
+                self._build_model(retrain_x, retrain_y, believer_mode=True)
+                candidate, _ = self._acqf_optimizer(retrain_x, retrain_y, q, bounds, believer_mode=True)
+                prediction = self._predict(candidate)
+
+                all_candidates = torch.cat((all_candidates, candidate))
+                all_predictions = torch.cat((all_predictions, prediction))
+            candidate, prediction = all_candidates, all_predictions
 
         candidate, prediction = candidate.detach().numpy(), prediction.detach().numpy()
-        
         if export_df:
             pred_df = pd.DataFrame(prediction, columns=self.y_names)
             candidate_df = pd.DataFrame(candidate, columns=self.var_names)
@@ -307,9 +412,3 @@ class MCBayesianOptimization:
             return candidate, prediction
 
     #def visualize(black_box_f=None, projection='2D', return_frame=False):
-
-
-
-
-
-
