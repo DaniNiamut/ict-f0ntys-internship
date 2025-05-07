@@ -75,8 +75,9 @@ def plot_well_data(time_column, y_true, y_filtered, y_fit, norm_react_rates, wel
     fig.text(0.78, 0.975, "Legend:", color='black')
     fig.text(0.84, 0.98, "Raw", fontweight='bold', color='#FF7F0E')
     fig.text(0.84, 0.96, "Filtered", fontweight='bold', color='#4CAF50')
-    fig.text(0.84, 0.94, "Fit", fontweight='bold', color='#257BB6')
-    fig.text(0.91, 0.97, "Reaction Rate", fontweight='bold', color='red')
+    fig.text(0.91, 0.96, "Fit", fontweight='bold', color='#257BB6')
+    fig.text(0.91, 0.98, "Reaction Rate", fontweight='bold', color='red')
+
 
     plt.tight_layout()
     plt.show()
