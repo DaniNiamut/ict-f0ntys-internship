@@ -91,31 +91,17 @@ class BayesianOptimization:
 
         self.cat_vals = None
 
-    def _build_model(self, train_x, train_y, believer_mode=False):
-        self.partitioning = 0
-        if len(self.y_names) > 1:
-            self.partitioning = DominatedPartitioning(
-                ref_point=torch.tensor(self.ref_point),
-                Y=train_y)
-
-        gp_dict = {'Single-Task GP':[SingleTaskGP,
+    def _build_dicts(self):
+        self.gp_dict = {'Single-Task GP':[SingleTaskGP,
                             {'covar_module':None}],
             'Mixed Single-Task GP':[MixedSingleTaskGP,
                             {'cat_dims':self.cat_dims, 'cont_kernel_factory':None}],
             'SAASBO':[general_saasbo_gp, dict()]}
-
-        if believer_mode is False:
-            self.gp = gp_dict[self.model_type][0](train_x, train_y, **gp_dict[self.model_type][1])
-            self.backup_gp = gp_dict[self.model_type][0](train_x, train_y, **gp_dict[self.model_type][1])
-        else:
-            self.gp = gp_dict[self.model_type][0](train_x, train_y, **gp_dict[self.model_type][1])
-
-    def _acqf_optimizer(self, train_x, train_y, q, bounds, believer_mode=False, input_weights=None):
-        acq_dict = {
-        'LogEI': [LogExpectedImprovement, {'best_f':train_y.max()}, AnalyticAcquisitionFunctionWithCost],
+        self.acq_dict = {
+        'LogEI': [LogExpectedImprovement, {'best_f':self.train_y.max()}, AnalyticAcquisitionFunctionWithCost],
         'UCB': [UpperConfidenceBound, {'beta':self.ucb_hyperparam}, AnalyticAcquisitionFunctionWithCost],
-        'LogPI': [ProbabilityOfImprovement, {'best_f':train_y.max()}, AnalyticAcquisitionFunctionWithCost],
-        'qLogEI': [qLogExpectedImprovement, {'best_f':train_y.max()}, MCAcquisitionFunctionWithCost],
+        'LogPI': [ProbabilityOfImprovement, {'best_f':self.train_y.max()}, AnalyticAcquisitionFunctionWithCost],
+        'qLogEI': [qLogExpectedImprovement, {'best_f':self.train_y.max()}, MCAcquisitionFunctionWithCost],
         'qUCB': [qUpperConfidenceBound, {'beta':self.ucb_hyperparam}, MCAcquisitionFunctionWithCost],
         'qLogPI': [qProbabilityOfImprovement, {'best_f':self.train_y.max()}, MCAcquisitionFunctionWithCost],
         'EHVI' : [ExpectedHypervolumeImprovement,
@@ -125,10 +111,24 @@ class BayesianOptimization:
                    {'ref_point': self.ref_point,'partitioning': self.partitioning},
                    qExpectedHypervolumeImprovementWithCost]}
 
-        acq_func = acq_dict[self.acq_func_name][0](self.gp, **acq_dict[self.acq_func_name][1])
+    def _build_model(self, train_x, train_y, believer_mode=False):
+        self.partitioning = 0
+        if len(self.y_names) > 1:
+            self.partitioning = DominatedPartitioning(
+                ref_point=torch.tensor(self.ref_point),
+                Y=train_y)
+        self._build_dicts()
+        if believer_mode is False:
+            self.gp = self.gp_dict[self.model_type][0](train_x, train_y, **self.gp_dict[self.model_type][1])
+            self.backup_gp = self.gp_dict[self.model_type][0](train_x, train_y, **self.gp_dict[self.model_type][1])
+        else:
+            self.gp = self.gp_dict[self.model_type][0](train_x, train_y, **self.gp_dict[self.model_type][1])
+
+    def _acqf_optimizer(self, train_x, q, bounds, believer_mode=False, input_weights=None):
+        acq_func = self.acq_dict[self.acq_func_name][0](self.gp, **self.acq_dict[self.acq_func_name][1])
         if input_weights is not None:
             cost_model = ingredient_cost(weights=input_weights, fixed_cost=1e-5)
-            acq_func = acq_dict[self.acq_func_name][2](self.gp, acq_func, cost_model)
+            acq_func = self.acq_dict[self.acq_func_name][2](self.gp, acq_func, cost_model)
 
         if bounds:
             self.bounds = torch.tensor(bounds)
@@ -144,6 +144,34 @@ class BayesianOptimization:
         else:
             self.acq_func = acq_func
         return candidate, _
+
+    def _set_up_feature_processing(self, train_x, train_y, optim_direc, cat_dims):
+            if optim_direc:
+                weights = [
+                    1 if val == "max" else -1 if val == "min" else val
+                    for val in optim_direc
+                ]
+                train_y = train_y.mul(weights, axis='columns')
+            self.cat_cols = cat_dims
+            if cat_dims is not None:
+                self.cat_vals = {
+                    col: sorted(train_x[col].unique().tolist())
+                    for col in cat_dims}
+            return train_y
+
+    def _setup_model_and_clean_up_method(self, train_x, cat_dims, model_type):
+        if (model_type is None or model_type == 'Mixed Single-Task GP') and cat_dims:
+                model_type = 'Mixed Single-Task GP'
+                cat_dims = [self.var_names.index(v) for v in cat_dims]
+                self.clean_up_method = snap_categories
+        elif model_type != 'Mixed Single-Task GP' and cat_dims:
+            dummies = pd.get_dummies(train_x[cat_dims], columns=cat_dims).astype(int)
+            train_x = pd.concat([train_x.drop(columns=cat_dims), dummies], axis=1)
+            self.var_names = list(train_x.columns)
+            self.clean_up_method = reverse_one_hot
+        else:
+            model_type = 'Single-Task GP'
+        return train_x, cat_dims, model_type
 
     def _predict(self, X):
         if (len(self.y_names) == 1 and self.model_type == 'SAASBO'):
@@ -177,34 +205,10 @@ class BayesianOptimization:
         self.clean_X_cols = list(X.columns)
         self.var_names = list(train_x.columns)
         train_y = X[y]
-        # make this a separate function
-        if optim_direc:
-            weights = [
-                1 if val == "max" else -1 if val == "min" else val
-                for val in optim_direc
-            ]
-            train_y = train_y.mul(weights, axis='columns')
-        self.cat_cols = cat_dims
-        if cat_dims is not None:
-            self.cat_vals = {
-                col: sorted(train_x[col].unique().tolist())
-                for col in cat_dims}
-
-        # make this a separate function
+        train_y = self._set_up_feature_processing(train_x, train_y, optim_direc, cat_dims)
         self.clean_up_method = df_reordering
-        if (model_type is None or model_type == 'Mixed Single-Task GP') and cat_dims:
-            model_type = 'Mixed Single-Task GP'
-            cat_dims = [self.var_names.index(v) for v in cat_dims]
-            self.clean_up_method = snap_categories
-        elif model_type != 'Mixed Single-Task GP' and cat_dims:
-            dummies = pd.get_dummies(train_x[cat_dims], columns=cat_dims).astype(int)
-            train_x = pd.concat([train_x.drop(columns=cat_dims), dummies], axis=1)
-            self.var_names = list(train_x.columns)
-            cat_dims = None
-            self.clean_up_method = reverse_one_hot
-        else:
-            model_type = 'Single-Task GP'
 
+        train_x, cat_dims, model_type = self._setup_model_and_clean_up_method(train_x, cat_dims, model_type)
         train_x = train_x.to_numpy().reshape(-1,np.shape(train_x)[1])
         train_y = train_y.to_numpy().reshape(-1,np.shape(train_y)[1])
         self.ref_point = train_y.min(axis=0)
@@ -239,7 +243,7 @@ class BayesianOptimization:
             q = 1
         self.acq_func_name = acq_func_name
 
-        candidate, _ = self._acqf_optimizer(self.train_x, self.train_y, q, bounds, input_weights)
+        candidate, _ = self._acqf_optimizer(self.train_x, q, bounds, input_weights)
         prediction = self._predict(candidate)
 
         if q_sampling_method=="Believer":
