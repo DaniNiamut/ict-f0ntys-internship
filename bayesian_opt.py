@@ -32,6 +32,32 @@ def general_saasbo_gp(X, Y):
         gp = models_list[0]
     return gp
 
+def reverse_one_hot(arr, var_names, cat_cols, var_names_original, **kwargs):
+    df = pd.DataFrame(arr, columns=var_names)
+
+    for cat in cat_cols:
+        cat_cols = [col for col in var_names if col.startswith(f"{cat}_")]
+        df[cat] = df[cat_cols].idxmax(axis=1).str.replace(f"{cat}_", "")
+        df.drop(columns=cat_cols, inplace=True)
+    # Reorder columns to match original
+    df = df[[col for col in var_names_original if col in df.columns]]
+    return df
+
+def snap_categories(arr, var_names, cat_vals, **kwargs):
+    is_df = isinstance(arr, pd.DataFrame)
+    data = pd.DataFrame(arr, columns=var_names)
+
+    for col, valid_vals in cat_vals.items():
+        #maybe this'll fix the trunk problem?
+        #data[col] = data[col].apply(lambda x, current_valid_vals=valid_vals: min(current_valid_vals, key=lambda v: abs(x - v)))
+        data[col] = data[col].apply(lambda x: min(valid_vals, key=lambda v: abs(x - v)))
+
+    return data if is_df else data.to_numpy()
+
+def df_reordering(arr, var_names_original, **kwargs):
+    return arr[[col for col in var_names_original
+                                             if col in arr.columns]]
+
 class BayesianOptimization:
     """
     Bayesian optimization.
@@ -62,6 +88,8 @@ class BayesianOptimization:
         self.ucb_hyperparam = 0.1
         self.num_restarts = 5
         self.raw_samples = 20
+
+        self.cat_vals = None
 
     def _build_model(self, train_x, train_y, believer_mode=False):
         self.partitioning = 0
@@ -146,24 +174,34 @@ class BayesianOptimization:
         """
         self.optim_direc = optim_direc
         train_x = X.drop(y, axis=1)
+        self.clean_X_cols = list(X.columns)
         self.var_names = list(train_x.columns)
         train_y = X[y]
+        # make this a separate function
         if optim_direc:
             weights = [
                 1 if val == "max" else -1 if val == "min" else val
                 for val in optim_direc
             ]
             train_y = train_y.mul(weights, axis='columns')
+        self.cat_cols = cat_dims
+        if cat_dims is not None:
+            self.cat_vals = {
+                col: sorted(train_x[col].unique().tolist())
+                for col in cat_dims}
 
-        ## make this a separate function
+        # make this a separate function
+        self.clean_up_method = df_reordering
         if (model_type is None or model_type == 'Mixed Single-Task GP') and cat_dims:
             model_type = 'Mixed Single-Task GP'
             cat_dims = [self.var_names.index(v) for v in cat_dims]
+            self.clean_up_method = snap_categories
         elif model_type != 'Mixed Single-Task GP' and cat_dims:
-            dummies = pd.get_dummies(X[cat_dims], columns=cat_dims).astype(int)
-            train_x = pd.concat([X.drop(columns=cat_dims), dummies], axis=1)
+            dummies = pd.get_dummies(train_x[cat_dims], columns=cat_dims).astype(int)
+            train_x = pd.concat([train_x.drop(columns=cat_dims), dummies], axis=1)
             self.var_names = list(train_x.columns)
-            cat_dims = [self.var_names.index(col) for col in dummies.columns]
+            cat_dims = None
+            self.clean_up_method = reverse_one_hot
         else:
             model_type = 'Single-Task GP'
 
@@ -224,6 +262,9 @@ class BayesianOptimization:
             pred_df = pd.DataFrame(prediction, columns=self.y_names)
             candidate_df = pd.DataFrame(candidate, columns=self.var_names)
             suggested_df = pd.concat((candidate_df, pred_df),axis=1)
+            suggested_df = self.clean_up_method(arr=suggested_df, var_names=list(suggested_df.columns),
+                            cat_vals=self.cat_vals, cat_cols=self.cat_cols,
+                            var_names_original=self.clean_X_cols)
             return suggested_df
         else:
             return candidate, prediction
