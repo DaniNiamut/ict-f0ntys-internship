@@ -1,6 +1,5 @@
 import torch
 from botorch.models import SingleTaskGP, MixedSingleTaskGP, SaasFullyBayesianSingleTaskGP, ModelListGP
-
 from botorch.acquisition.analytic import (LogExpectedImprovement, UpperConfidenceBound,
                                         ProbabilityOfImprovement)
 from botorch.acquisition import qLogExpectedImprovement, qUpperConfidenceBound, qProbabilityOfImprovement
@@ -12,12 +11,17 @@ from botorch.acquisition.multi_objective.monte_carlo import qExpectedHypervolume
 from cost_aware_acquisition import (ingredient_cost, AnalyticAcquisitionFunctionWithCost,
                                     MCAcquisitionFunctionWithCost, ExpectedHypervolumeImprovementWithCost,
                                     qExpectedHypervolumeImprovementWithCost)
-
 from botorch.optim import optimize_acqf
 import numpy as np
 from botorch import fit_fully_bayesian_model_nuts
 import pandas as pd
 from botorch.utils.multi_objective.box_decompositions.dominated import DominatedPartitioning
+import warnings
+
+from botorch.exceptions import InputDataWarning
+# Ignore only the scaling warning
+warnings.filterwarnings("ignore", category=InputDataWarning)
+
 
 def general_saasbo_gp(X, Y):
     models_list = []
@@ -49,8 +53,8 @@ def snap_categories(arr, var_names, cat_vals, **kwargs):
 
     for col, valid_vals in cat_vals.items():
         #maybe this'll fix the trunk problem?
-        #data[col] = data[col].apply(lambda x, current_valid_vals=valid_vals: min(current_valid_vals, key=lambda v: abs(x - v)))
-        data[col] = data[col].apply(lambda x: min(valid_vals, key=lambda v: abs(x - v)))
+        data[col] = data[col].apply(lambda x, current_valid_vals=valid_vals:
+                                    min(current_valid_vals, key=lambda v: abs(x - v)))
 
     return data if is_df else data.to_numpy()
 
@@ -199,6 +203,43 @@ class BayesianOptimization:
             prediction = self.gp.posterior(X).variance
         return prediction
 
+    def _believer_update(self, candidate, prediction, analytic_iter_n, bounds, input_weights):
+        believer_iter = 0
+        all_candidates = candidate
+        all_predictions = prediction
+        retrain_y = self.train_y
+        retrain_x = self.train_x
+        while believer_iter < analytic_iter_n:
+            retrain_y = torch.cat((retrain_y, prediction))
+            retrain_x = torch.cat((retrain_x, candidate))
+            self._build_model(retrain_x, retrain_y, believer_mode=True)
+            candidate, _ = self._acqf_optimizer(train_x=retrain_x, q=1, bounds=bounds,
+                                                believer_mode=True, input_weights=input_weights)
+            candidate = candidate.round(decimals=2)
+            if not torch.any(torch.all(candidate == all_candidates, dim=1)):
+                prediction = self._predict(candidate)
+                all_candidates = torch.cat((all_candidates, candidate))
+                all_predictions = torch.cat((all_predictions, prediction))
+                believer_iter += 1
+        return all_candidates, all_predictions
+
+    def _acq_func_determiner(self, acq_func_name, q_sampling_method, q):
+        if acq_func_name is None and len(self.y_names) > 1:
+                    acq_func_name = 'EHVI'
+        elif acq_func_name is None and len(self.y_names) == 1:
+            acq_func_name = 'LogEI'
+
+        analytic_iter_n = None
+        if q_sampling_method is None and q > 1:
+            acq_func_name = 'q' + acq_func_name
+        elif q_sampling_method == "Monte Carlo":
+            acq_func_name = 'q' + acq_func_name
+        elif q_sampling_method == "Believer":
+            analytic_iter_n = q - 1
+            q = 1
+        self.acq_func_name = acq_func_name
+        return q, analytic_iter_n
+
     def fit(self, X, y, optim_direc=None, cat_dims=None, model_type=None,kernel=None):
         """
         Parameters
@@ -241,48 +282,19 @@ class BayesianOptimization:
         q_sampling_method : If None, Monte Carlo will be chosen if q>1 
         and the analytic method will be chosen for q=1. ["Monte Carlo", "Believer"]
         """
-        #make a function
-        if acq_func_name is None and len(self.y_names) > 1:
-            acq_func_name = 'EHVI'
-        elif acq_func_name is None and len(self.y_names) == 1:
-            acq_func_name = 'LogEI'
-
-        if q_sampling_method is None and q > 1:
-            acq_func_name = 'q' + acq_func_name
-        elif q_sampling_method == "Monte Carlo":
-            acq_func_name = 'q' + acq_func_name
-        elif q_sampling_method == "Believer":
-            analytic_iter_n = q - 1
-            q = 1
-        self.acq_func_name = acq_func_name
-
+        q, analytic_iter_n = self._acq_func_determiner(acq_func_name=acq_func_name,
+                                                       q_sampling_method=q_sampling_method, q=q)
         candidate, _ = self._acqf_optimizer(train_x=self.train_x, q=q,
                                             bounds=bounds, input_weights=input_weights)
         candidate = candidate.round(decimals=2)
         prediction = self._predict(candidate)
 
         if q_sampling_method=="Believer":
-            believer_iter = 0
-            all_candidates = candidate
-            all_predictions = prediction
-            #make this a function too
-            retrain_y = self.train_y
-            retrain_x = self.train_x
-            while believer_iter < analytic_iter_n:
-                retrain_y = torch.cat((retrain_y, prediction))
-                retrain_x = torch.cat((retrain_x, candidate))
-                self._build_model(retrain_x, retrain_y, believer_mode=True)
-                candidate, _ = self._acqf_optimizer(train_x=retrain_x, q=1, bounds=bounds,
-                                                    believer_mode=True, input_weights=input_weights)
-                candidate = candidate.round(decimals=2)
-                if not torch.any(torch.all(candidate == all_candidates, dim=1)):
-                    prediction = self._predict(candidate)
-                    all_candidates = torch.cat((all_candidates, candidate))
-                    all_predictions = torch.cat((all_predictions, prediction))
-                    believer_iter += 1
-            candidate, prediction = all_candidates, all_predictions
-
+            candidate, prediction = self._believer_update(candidate=candidate, prediction=prediction,
+                                                          analytic_iter_n=analytic_iter_n, bounds=bounds,
+                                                          input_weights=input_weights)
         candidate, prediction = candidate.detach().numpy(), prediction.detach().numpy()
+
         if export_df:
             pred_df = pd.DataFrame(prediction, columns=self.y_names)
             candidate_df = pd.DataFrame(candidate, columns=self.var_names)
