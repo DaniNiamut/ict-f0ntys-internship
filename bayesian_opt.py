@@ -186,6 +186,19 @@ class BayesianOptimization:
             prediction = self.gp.posterior(X).mean
         return prediction
 
+    def _variance(self, X):
+        if (len(self.y_names) == 1 and self.model_type == 'SAASBO'):
+            prediction = self.gp.posterior(X).variance.mean(dim=0)
+        elif (len(self.y_names) > 1 and self.model_type == 'SAASBO'):
+            preds = []
+            for model_ind in range(len(self.y_names)):
+                pred = self.gp.models[model_ind].posterior(X).variance.mean(dim=0)
+                preds.append(pred)
+            prediction = torch.cat(preds, dim=1)
+        else:
+            prediction = self.gp.posterior(X).variance
+        return prediction
+
     def fit(self, X, y, optim_direc=None, cat_dims=None, model_type=None,kernel=None):
         """
         Parameters
@@ -238,27 +251,35 @@ class BayesianOptimization:
             acq_func_name = 'q' + acq_func_name
         elif q_sampling_method == "Monte Carlo":
             acq_func_name = 'q' + acq_func_name
-        elif q_sampling_method == "Believer" and q > 1:
+        elif q_sampling_method == "Believer":
             analytic_iter_n = q - 1
             q = 1
         self.acq_func_name = acq_func_name
 
-        candidate, _ = self._acqf_optimizer(self.train_x, q, bounds, input_weights)
+        candidate, _ = self._acqf_optimizer(train_x=self.train_x, q=q,
+                                            bounds=bounds, input_weights=input_weights)
+        candidate = candidate.round(decimals=2)
         prediction = self._predict(candidate)
 
         if q_sampling_method=="Believer":
+            believer_iter = 0
             all_candidates = candidate
             all_predictions = prediction
             #make this a function too
-            for _ in range(analytic_iter_n):
-                retrain_y = torch.cat((self.train_y, prediction))
-                retrain_x = torch.cat((self.train_x, candidate))
+            retrain_y = self.train_y
+            retrain_x = self.train_x
+            while believer_iter < analytic_iter_n:
+                retrain_y = torch.cat((retrain_y, prediction))
+                retrain_x = torch.cat((retrain_x, candidate))
                 self._build_model(retrain_x, retrain_y, believer_mode=True)
-                candidate, _ = self._acqf_optimizer(retrain_x, retrain_y, q, bounds, believer_mode=True)
-                prediction = self._predict(candidate)
-
-                all_candidates = torch.cat((all_candidates, candidate))
-                all_predictions = torch.cat((all_predictions, prediction))
+                candidate, _ = self._acqf_optimizer(train_x=retrain_x, q=1, bounds=bounds,
+                                                    believer_mode=True, input_weights=input_weights)
+                candidate = candidate.round(decimals=2)
+                if not torch.any(torch.all(candidate == all_candidates, dim=1)):
+                    prediction = self._predict(candidate)
+                    all_candidates = torch.cat((all_candidates, candidate))
+                    all_predictions = torch.cat((all_predictions, prediction))
+                    believer_iter += 1
             candidate, prediction = all_candidates, all_predictions
 
         candidate, prediction = candidate.detach().numpy(), prediction.detach().numpy()
