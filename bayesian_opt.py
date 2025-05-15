@@ -17,11 +17,11 @@ from botorch import fit_fully_bayesian_model_nuts
 import pandas as pd
 from botorch.utils.multi_objective.box_decompositions.dominated import DominatedPartitioning
 import warnings
+#from matplotlib import pyplot as plt
 
 from botorch.exceptions import InputDataWarning
 # Ignore only the scaling warning
 warnings.filterwarnings("ignore", category=InputDataWarning)
-
 
 def general_saasbo_gp(X, Y):
     models_list = []
@@ -62,7 +62,120 @@ def df_reordering(arr, var_names_original, **kwargs):
     return arr[[col for col in var_names_original
                                              if col in arr.columns]]
 
-class BayesianOptimization:
+class FeaturePreprocessor:
+    def _set_up_feature_processing(self, train_x, train_y, optim_direc, cat_dims):
+        if optim_direc:
+            weights = [1 if val == "max" else -1 if val == "min" else val for val in optim_direc]
+            train_y = train_y.mul(weights, axis='columns')
+        self.cat_cols = cat_dims
+        if cat_dims is not None:
+            self.cat_vals = {col: sorted(train_x[col].unique().tolist()) for col in cat_dims}
+        return train_y
+
+    def _setup_model_and_clean_up_method(self, train_x, cat_dims, model_type):
+        if (model_type is None or model_type == 'Mixed Single-Task GP') and cat_dims:
+            model_type = 'Mixed Single-Task GP'
+            cat_dims = [self.var_names.index(v) for v in cat_dims]
+            self.clean_up_method = snap_categories
+        elif model_type != 'Mixed Single-Task GP' and cat_dims:
+            dummies = pd.get_dummies(train_x[cat_dims], columns=cat_dims).astype(int)
+            train_x = pd.concat([train_x.drop(columns=cat_dims), dummies], axis=1)
+            self.var_names = list(train_x.columns)
+            self.clean_up_method = reverse_one_hot
+        else:
+            model_type = 'Single-Task GP'
+        return train_x, cat_dims, model_type
+
+    def _build_dicts(self):
+        self.gp_dict = {
+            'Single-Task GP': [SingleTaskGP, {'covar_module': None}],
+            'Mixed Single-Task GP': [MixedSingleTaskGP, {'cat_dims': self.cat_dims, 'cont_kernel_factory': None}],
+            'SAASBO': [general_saasbo_gp, dict()]
+        }
+
+        self.acq_dict = {
+            'LogEI': [LogExpectedImprovement, {'best_f': self.train_y.max()}, AnalyticAcquisitionFunctionWithCost],
+            'UCB': [UpperConfidenceBound, {'beta': self.ucb_hyperparam}, AnalyticAcquisitionFunctionWithCost],
+            'LogPI': [ProbabilityOfImprovement, {'best_f': self.train_y.max()}, AnalyticAcquisitionFunctionWithCost],
+            'qLogEI': [qLogExpectedImprovement, {'best_f': self.train_y.max()}, MCAcquisitionFunctionWithCost],
+            'qUCB': [qUpperConfidenceBound, {'beta': self.ucb_hyperparam}, MCAcquisitionFunctionWithCost],
+            'qLogPI': [qProbabilityOfImprovement, {'best_f': self.train_y.max()}, MCAcquisitionFunctionWithCost],
+            'EHVI': [ExpectedHypervolumeImprovement,
+                     {'ref_point': self.ref_point, 'partitioning': self.partitioning},
+                     ExpectedHypervolumeImprovementWithCost],
+            'qEHVI': [qExpectedHypervolumeImprovement,
+                      {'ref_point': self.ref_point, 'partitioning': self.partitioning},
+                      qExpectedHypervolumeImprovementWithCost]
+        }
+
+class AcquisitionHandler:
+
+    def __init__(self):
+        self.acq_func_name = None
+        self.y_names = None
+
+    def _acqf_optimizer(self, train_x, q, bounds, believer_mode=False, input_weights=None):
+        acq_func = self.acq_dict[self.acq_func_name][0](self.gp, **self.acq_dict[self.acq_func_name][1])
+        if input_weights is not None:
+            cost_model = ingredient_cost(weights=input_weights, fixed_cost=1e-5)
+            acq_func = self.acq_dict[self.acq_func_name][2](self.gp, acq_func, cost_model)
+
+        if bounds:
+            self.bounds = torch.tensor(bounds)
+        else:
+            bounds = (torch.min(train_x, 0)[0], torch.max(train_x, 0)[0])
+            self.bounds = torch.stack(bounds)
+
+        candidate, _ = optimize_acqf(acq_func, bounds=self.bounds, q=q,
+                                     num_restarts=self.num_restarts, raw_samples=self.raw_samples)
+
+        if not believer_mode:
+            self.acq_func = acq_func
+            self.backup_acq_func = acq_func
+        else:
+            self.acq_func = acq_func
+        return candidate, _
+
+    def _acq_func_determiner(self, acq_func_name, q_sampling_method, q):
+        if acq_func_name is None and len(self.y_names) > 1:
+            acq_func_name = 'EHVI'
+        elif acq_func_name is None and len(self.y_names) == 1:
+            acq_func_name = 'LogEI'
+
+        analytic_iter_n = None
+        if q_sampling_method is None and q > 1:
+            acq_func_name = 'q' + acq_func_name
+        elif q_sampling_method == "Monte Carlo":
+            acq_func_name = 'q' + acq_func_name
+        elif q_sampling_method == "Believer":
+            analytic_iter_n = q - 1
+            q = 1
+
+        self.acq_func_name = acq_func_name
+        return q, analytic_iter_n
+
+    def _believer_update(self, candidate, prediction, analytic_iter_n, bounds, input_weights):
+        believer_iter = 0
+        all_candidates = candidate
+        all_predictions = prediction
+        retrain_y = self.train_y
+        retrain_x = self.train_x
+
+        while believer_iter < analytic_iter_n:
+            retrain_y = torch.cat((retrain_y, prediction))
+            retrain_x = torch.cat((retrain_x, candidate))
+            self._build_model(retrain_x, retrain_y, believer_mode=True)
+            candidate, _ = self._acqf_optimizer(train_x=retrain_x, q=1, bounds=bounds,
+                                                believer_mode=True, input_weights=input_weights)
+            candidate = candidate.round(decimals=2)
+            if not torch.any(torch.all(candidate == all_candidates, dim=1)):
+                prediction, _ = self._predict(candidate)
+                all_candidates = torch.cat((all_candidates, candidate))
+                all_predictions = torch.cat((all_predictions, prediction))
+                believer_iter += 1
+        return all_candidates, all_predictions
+
+class BayesianOptimization(FeaturePreprocessor, AcquisitionHandler):
     """
     Bayesian optimization.
 
@@ -95,26 +208,6 @@ class BayesianOptimization:
 
         self.cat_vals = None
 
-    def _build_dicts(self):
-        self.gp_dict = {'Single-Task GP':[SingleTaskGP,
-                            {'covar_module':None}],
-            'Mixed Single-Task GP':[MixedSingleTaskGP,
-                            {'cat_dims':self.cat_dims, 'cont_kernel_factory':None}],
-            'SAASBO':[general_saasbo_gp, dict()]}
-        self.acq_dict = {
-        'LogEI': [LogExpectedImprovement, {'best_f':self.train_y.max()}, AnalyticAcquisitionFunctionWithCost],
-        'UCB': [UpperConfidenceBound, {'beta':self.ucb_hyperparam}, AnalyticAcquisitionFunctionWithCost],
-        'LogPI': [ProbabilityOfImprovement, {'best_f':self.train_y.max()}, AnalyticAcquisitionFunctionWithCost],
-        'qLogEI': [qLogExpectedImprovement, {'best_f':self.train_y.max()}, MCAcquisitionFunctionWithCost],
-        'qUCB': [qUpperConfidenceBound, {'beta':self.ucb_hyperparam}, MCAcquisitionFunctionWithCost],
-        'qLogPI': [qProbabilityOfImprovement, {'best_f':self.train_y.max()}, MCAcquisitionFunctionWithCost],
-        'EHVI' : [ExpectedHypervolumeImprovement,
-                  {'ref_point': self.ref_point,'partitioning': self.partitioning},
-                  ExpectedHypervolumeImprovementWithCost],
-        'qEHVI' : [qExpectedHypervolumeImprovement,
-                   {'ref_point': self.ref_point,'partitioning': self.partitioning},
-                   qExpectedHypervolumeImprovementWithCost]}
-
     def _build_model(self, train_x, train_y, believer_mode=False):
         self.partitioning = 0
         if len(self.y_names) > 1:
@@ -128,117 +221,23 @@ class BayesianOptimization:
         else:
             self.gp = self.gp_dict[self.model_type][0](train_x, train_y, **self.gp_dict[self.model_type][1])
 
-    def _acqf_optimizer(self, train_x, q, bounds, believer_mode=False, input_weights=None):
-        acq_func = self.acq_dict[self.acq_func_name][0](self.gp, **self.acq_dict[self.acq_func_name][1])
-        if input_weights is not None:
-            cost_model = ingredient_cost(weights=input_weights, fixed_cost=1e-5)
-            acq_func = self.acq_dict[self.acq_func_name][2](self.gp, acq_func, cost_model)
-
-        if bounds:
-            self.bounds = torch.tensor(bounds)
-        else:
-            bounds = (torch.min(train_x, 0)[0], torch.max(train_x, 0)[0])
-            self.bounds = torch.stack(bounds)
-
-        candidate, _ = optimize_acqf(acq_func, bounds=self.bounds, q=q,
-                                    num_restarts=self.num_restarts, raw_samples=self.raw_samples)
-        if believer_mode is False:
-            self.acq_func = acq_func
-            self.backup_acq_func = acq_func
-        else:
-            self.acq_func = acq_func
-        return candidate, _
-
-    def _set_up_feature_processing(self, train_x, train_y, optim_direc, cat_dims):
-            if optim_direc:
-                weights = [
-                    1 if val == "max" else -1 if val == "min" else val
-                    for val in optim_direc
-                ]
-                train_y = train_y.mul(weights, axis='columns')
-            self.cat_cols = cat_dims
-            if cat_dims is not None:
-                self.cat_vals = {
-                    col: sorted(train_x[col].unique().tolist())
-                    for col in cat_dims}
-            return train_y
-
-    def _setup_model_and_clean_up_method(self, train_x, cat_dims, model_type):
-        if (model_type is None or model_type == 'Mixed Single-Task GP') and cat_dims:
-                model_type = 'Mixed Single-Task GP'
-                cat_dims = [self.var_names.index(v) for v in cat_dims]
-                self.clean_up_method = snap_categories
-        elif model_type != 'Mixed Single-Task GP' and cat_dims:
-            dummies = pd.get_dummies(train_x[cat_dims], columns=cat_dims).astype(int)
-            train_x = pd.concat([train_x.drop(columns=cat_dims), dummies], axis=1)
-            self.var_names = list(train_x.columns)
-            self.clean_up_method = reverse_one_hot
-        else:
-            model_type = 'Single-Task GP'
-        return train_x, cat_dims, model_type
-
     def _predict(self, X):
         if (len(self.y_names) == 1 and self.model_type == 'SAASBO'):
             prediction = self.gp.posterior(X).mean.mean(dim=0)
+            variance = self.gp.posterior(X).variance.mean(dim=0)
         elif (len(self.y_names) > 1 and self.model_type == 'SAASBO'):
-            preds = []
+            preds, variances = [], []
             for model_ind in range(len(self.y_names)):
                 pred = self.gp.models[model_ind].posterior(X).mean.mean(dim=0)
+                variance = self.gp.models[model_ind].posterior(X).variance.mean(dim=0)
+                variances.append(variance)
                 preds.append(pred)
             prediction = torch.cat(preds, dim=1)
+            variance = torch.cat(variances, dim=1)
         else:
             prediction = self.gp.posterior(X).mean
-        return prediction
-
-    def _variance(self, X):
-        if (len(self.y_names) == 1 and self.model_type == 'SAASBO'):
-            prediction = self.gp.posterior(X).variance.mean(dim=0)
-        elif (len(self.y_names) > 1 and self.model_type == 'SAASBO'):
-            preds = []
-            for model_ind in range(len(self.y_names)):
-                pred = self.gp.models[model_ind].posterior(X).variance.mean(dim=0)
-                preds.append(pred)
-            prediction = torch.cat(preds, dim=1)
-        else:
-            prediction = self.gp.posterior(X).variance
-        return prediction
-
-    def _believer_update(self, candidate, prediction, analytic_iter_n, bounds, input_weights):
-        believer_iter = 0
-        all_candidates = candidate
-        all_predictions = prediction
-        retrain_y = self.train_y
-        retrain_x = self.train_x
-        while believer_iter < analytic_iter_n:
-            retrain_y = torch.cat((retrain_y, prediction))
-            retrain_x = torch.cat((retrain_x, candidate))
-            self._build_model(retrain_x, retrain_y, believer_mode=True)
-            candidate, _ = self._acqf_optimizer(train_x=retrain_x, q=1, bounds=bounds,
-                                                believer_mode=True, input_weights=input_weights)
-            candidate = candidate.round(decimals=2)
-            if not torch.any(torch.all(candidate == all_candidates, dim=1)):
-                prediction = self._predict(candidate)
-                all_candidates = torch.cat((all_candidates, candidate))
-                all_predictions = torch.cat((all_predictions, prediction))
-                believer_iter += 1
-        return all_candidates, all_predictions
-
-    def _acq_func_determiner(self, acq_func_name, q_sampling_method, q):
-        if acq_func_name is None and len(self.y_names) > 1:
-                    acq_func_name = 'EHVI'
-        elif acq_func_name is None and len(self.y_names) == 1:
-            acq_func_name = 'LogEI'
-
-        analytic_iter_n = None
-        if q_sampling_method is None and q > 1:
-            acq_func_name = 'q' + acq_func_name
-        elif q_sampling_method == "Monte Carlo":
-            acq_func_name = 'q' + acq_func_name
-        elif q_sampling_method == "Believer":
-            analytic_iter_n = q - 1
-            q = 1
-        self.acq_func_name = acq_func_name
-        return q, analytic_iter_n
+            variance = self.gp.posterior(X).variance
+        return prediction, variance
 
     def fit(self, X, y, optim_direc=None, cat_dims=None, model_type=None,kernel=None):
         """
@@ -287,7 +286,7 @@ class BayesianOptimization:
         candidate, _ = self._acqf_optimizer(train_x=self.train_x, q=q,
                                             bounds=bounds, input_weights=input_weights)
         candidate = candidate.round(decimals=2)
-        prediction = self._predict(candidate)
+        prediction, _ = self._predict(candidate)
 
         if q_sampling_method=="Believer":
             candidate, prediction = self._believer_update(candidate=candidate, prediction=prediction,
@@ -306,4 +305,4 @@ class BayesianOptimization:
         else:
             return candidate, prediction
 
-    #def visualize(black_box_f=None, projection='2D', return_frame=False):
+    #def visualize(bounds=None):
