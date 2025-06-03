@@ -17,6 +17,7 @@ from botorch import fit_fully_bayesian_model_nuts
 import pandas as pd
 from botorch.utils.multi_objective.box_decompositions.dominated import DominatedPartitioning
 import warnings
+from bodi import HammingEmbeddingDictionary
 #from matplotlib import pyplot as plt
 
 from botorch.exceptions import InputDataWarning
@@ -68,15 +69,24 @@ class FeaturePreprocessor:
             weights = [1 if val == "max" else -1 if val == "min" else val for val in optim_direc]
             train_y = train_y.mul(weights, axis='columns')
         self.cat_cols = cat_dims
+        self.cat_classes = None
         if cat_dims is not None:
             self.cat_vals = {col: sorted(train_x[col].unique().tolist()) for col in cat_dims}
+            cat_dict_keys = list(self.cat_vals.keys())
+            self.cat_classes = [int(max(self.cat_vals[key])) for key in cat_dict_keys]
         return train_y
 
     def _setup_model_and_clean_up_method(self, train_x, cat_dims, model_type):
+        self.input_transform = None
         if (model_type is None or model_type == 'Mixed Single-Task GP') and cat_dims:
             model_type = 'Mixed Single-Task GP'
             cat_dims = [self.var_names.index(v) for v in cat_dims]
             self.clean_up_method = snap_categories
+        if model_type == 'HED' and cat_dims:
+            cat_dims = [self.var_names.index(v) for v in cat_dims]
+            self.input_transform = HammingEmbeddingDictionary(cat_dims=cat_dims,
+                                      reduced_cat_dim=self.dictionary_m,
+                                      classes_per_cat=self.cat_classes)
         elif model_type != 'Mixed Single-Task GP' and cat_dims:
             dummies = pd.get_dummies(train_x[cat_dims], columns=cat_dims).astype(int)
             train_x = pd.concat([train_x.drop(columns=cat_dims), dummies], axis=1)
@@ -90,7 +100,8 @@ class FeaturePreprocessor:
         self.gp_dict = {
             'Single-Task GP': [SingleTaskGP, {'covar_module': None}],
             'Mixed Single-Task GP': [MixedSingleTaskGP, {'cat_dims': self.cat_dims, 'cont_kernel_factory': None}],
-            'SAASBO': [general_saasbo_gp, dict()]
+            'SAASBO': [general_saasbo_gp, dict()],
+            'HED': [SingleTaskGP, {'input_transform':self.input_transform}]
         }
 
         self.acq_dict = {
@@ -205,6 +216,7 @@ class BayesianOptimization(FeaturePreprocessor, AcquisitionHandler):
         self.ucb_hyperparam = 0.1
         self.num_restarts = 5
         self.raw_samples = 20
+        self.dictionary_m = 128
 
         self.cat_vals = None
 
