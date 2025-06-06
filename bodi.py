@@ -46,8 +46,12 @@ class HammingDistance(Function):
     @staticmethod
     def backward(ctx, grad_output):
         u, v = ctx.saved_tensors
-        #incorrect gradients
-        return grad_output * u, grad_output * v
+        #Approximation gradients using dicrete generalization for hamming distance.
+        #Sigmoidal or piecewise approximation could also be considered.
+        n = len(u)
+        epsilon = 1e-5
+        grad_hamming = (u - v) / (n * torch.abs(u - v) + epsilon)
+        return grad_hamming, grad_hamming
 
 def hed_transform(A, X):
     observations, _ = X.shape
