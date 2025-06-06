@@ -25,6 +25,16 @@ from botorch.exceptions import InputDataWarning
 warnings.filterwarnings("ignore", category=InputDataWarning)
 
 def general_saasbo_gp(X, Y):
+    """
+
+    Parameters
+    ----------
+
+
+    Returns
+    -------
+
+    """
     models_list = []
     for i in range(Y.shape[1]):
         model = SaasFullyBayesianSingleTaskGP(X, Y[:,i].reshape(-1,1))
@@ -37,7 +47,24 @@ def general_saasbo_gp(X, Y):
         gp = models_list[0]
     return gp
 
-def reverse_one_hot(arr, var_names, cat_cols, var_names_original, **kwargs):
+def reverse_one_hot(arr : np.ndarray , var_names : list[str], cat_cols : list[str], var_names_original : list[str], **kwargs):
+    """
+    Performs reverse one-hot encoding on the given array or dataframe.
+
+    Parameters
+    ----------
+    arr : numpy array or dataframe of shape (n_samples, n_features).
+
+    var_names : list of strings with the names of the variables in the array. They have to be the same size as n_features in arr.
+
+    cat_cols : list of strings with the names of the categorical columns.
+
+    var_names_original : list of strings with the original order of the variable names.
+
+    Returns
+    -------
+    Pandas DataFrame with  
+    """
     df = pd.DataFrame(arr, columns=var_names)
 
     for cat in cat_cols:
@@ -48,18 +75,43 @@ def reverse_one_hot(arr, var_names, cat_cols, var_names_original, **kwargs):
     df = df[[col for col in var_names_original if col in df.columns]]
     return df
 
-def snap_categories(arr, var_names, cat_vals, **kwargs):
+def snap_categories(arr : np.ndarray, var_names : list[str], cat_vals : dict[str , list[float]], **kwargs):
+    """
+    Puts (snaps) each categorical variable in arr to the closest valid category in cat_vals per categorical variable.
+
+    Parameters  
+    ----------
+    arr : numpy array or dataframe of shape (n_samples, n_features).
+
+    var_names : list of strings with the names of the variables in the array. var_names has to be the same length as n_features in arr.
+
+    cat_vals : dictionary where the keys are the names of each catregory and the values are lists of valid values for that category. 
+
+    Returns
+    -------
+    Pandas dataframe with the same shape as arr, but with categorical variables snapped to the closest valid category value.
+    If arr is a dataframe, it will return a dataframe, otherwise it will return a numpy array.
+    """
     is_df = isinstance(arr, pd.DataFrame)
     data = pd.DataFrame(arr, columns=var_names)
 
     for col, valid_vals in cat_vals.items():
-        #maybe this"ll fix the trunk problem?
+        # Chooses minimum distance between valid categories (valid_vals) and the actual candidate value (X).
         data[col] = data[col].apply(lambda x, current_valid_vals=valid_vals:
                                     min(current_valid_vals, key=lambda v: abs(x - v)))
 
     return data if is_df else data.to_numpy()
 
 def df_reordering(arr, var_names_original, **kwargs):
+    """
+    Reorders the columns of a dataframe or numpy array to match the original order of variable names.
+
+    Parameters
+    ----------
+    Returns
+    -------
+    Numpuy array or 
+    """
     return arr[[col for col in var_names_original
                                              if col in arr.columns]]
 
@@ -255,6 +307,7 @@ class BayesianOptimization(FeaturePreprocessor, AcquisitionHandler):
             self.gp = self.gp_dict[self.model_type][0](train_x, train_y, **self.gp_dict[self.model_type][1])
 
     def _predict(self, X):
+         
         if (len(self.y_names) == 1 and self.model_type == "SAASBO"):
             prediction = self.gp.posterior(X).mean.mean(dim=0)
             variance = self.gp.posterior(X).variance.mean(dim=0)
