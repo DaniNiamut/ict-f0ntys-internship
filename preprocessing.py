@@ -65,7 +65,9 @@ def least_squares_fitter(t_vals, y_vals):
 # Sigmoid approximation
     L = np.max(y_vals)
     with np.errstate(divide='ignore', invalid='ignore'):
-        y_ratio = np.clip(L / y_vals - 1, 1e-10, None)
+        safe_vals = np.clip(y_vals, 1e-5, None)
+        y_ratio = L / safe_vals - 1
+        y_ratio = np.clip(y_ratio, 1e-10, None)
         z = np.log(y_ratio)
     # Estimate t0 as the t at max slope
     slopes = np.gradient(y_vals, t_vals)
@@ -96,8 +98,11 @@ def least_squares_fitter(t_vals, y_vals):
     b = np.exp(model.intercept_)
     a = model.coef_[0]
     params['exp'] = (a, b)  # y = a * exp(b*t)
-    y_pred = exp_fn(t_vals, *params['exp'])
-    exp_score = r2_score(y_vals, np.clip(y_pred, -1e10, 1e10))
+    with np.errstate(over='ignore', under='ignore', invalid='ignore'):
+        raw = exp_fn(t_vals, *params['exp'])
+    y_pred = np.clip(raw, -1e10, 1e10)
+    y_pred = np.nan_to_num(y_pred)
+    exp_score = r2_score(y_vals, y_pred)
     scores.append(exp_score)
 
     # Negative Exponential
@@ -116,14 +121,18 @@ def least_squares_fitter(t_vals, y_vals):
     model = LinearRegression().fit(X_tail, z)
     b = -model.coef_[0]
     params['dec exp'] = (a, b, c, d)
-    y_pred = dec_exp_fn(t_vals, *params['dec exp'])
+    with np.errstate(over='ignore', under='ignore', invalid='ignore'):
+        y_pred = dec_exp_fn(t_vals, *params['dec exp'])
+    y_pred = np.nan_to_num(y_pred)
     dec_exp_score = r2_score(y_vals, np.clip(y_pred, -1e10, 1e10))
     scores.append(dec_exp_score)
 
     return params, scores
 
-def preprocessor(settings_df, raw_df, pos_wells, override_wells=None, plot=False, return_coef=False):
+def preprocessor(settings_df, raw_df, pos_wells, override_wells=None,
+                 plot=False, return_coef=False, return_function_type=True):
     # Only keep linear and decaying exponential parameters
+
     params_names = ['linear_a', 'linear_b', 'dec_exp_a', 'dec_exp_b', 'dec_exp_c', 'dec_exp_d']
     params_indices = {
         'linear': [0, 1],
@@ -146,12 +155,17 @@ def preprocessor(settings_df, raw_df, pos_wells, override_wells=None, plot=False
     settings_df = settings_df.set_index('well').T.reset_index()
     settings_df.columns.name = None
     settings_df = settings_df.drop(columns='index')
-    time_column = raw_df['Time'].apply(lambda t: (t.hour * 3600 + t.minute * 60 + t.second)).to_numpy()
+
+    if np.issubdtype(raw_df['Time'].dtype, np.number):
+        time_column = raw_df['Time'].to_numpy()
+    else:
+        time_column = raw_df['Time'].apply(lambda t: t.hour * 3600 + t.minute * 60 + t.second).to_numpy()
+
+    #time_column = raw_df['Time'].apply(lambda t: (t.hour * 3600 + t.minute * 60 + t.second)).to_numpy()
 
     for well in wells:
         params_as_vars = np.zeros(6)  # Updated to match new param count
         y_vals = raw_df[well].to_numpy()
-
         ir = IsotonicRegression(increasing=True)
         x_fit = ir.fit_transform(time_column, y_vals)
         total_yield = max(y_vals)
@@ -163,9 +177,9 @@ def preprocessor(settings_df, raw_df, pos_wells, override_wells=None, plot=False
         filtered_params = {k: v for k, v in params.items() if k in ['linear', 'dec exp']}
         filtered_scores = [scores[i] for i, k in enumerate(params.keys()) if k in ['linear', 'dec exp']]
         best_fit = list(filtered_params.keys())[np.argmax(filtered_scores)]
-        
-        params_as_vars[params_indices[best_fit]] = filtered_params[best_fit]
 
+        for i, val in zip(params_indices[best_fit], filtered_params[best_fit]):
+            params_as_vars[i] = val
         max_react_rates.append(t0)
         yields.append(total_yield)
         best_fits.append(best_fit)
@@ -185,7 +199,8 @@ def preprocessor(settings_df, raw_df, pos_wells, override_wells=None, plot=False
         settings_df[params_names] = all_params
     settings_df['norm_yield_grad'] = norm_react_rates
     settings_df['max_yield'] = yields
-    settings_df['function_type'] = best_fits
+    if return_function_type is True:
+        settings_df['function_type'] = best_fits
 
     if plot:
         y_fit = np.array([params_functs[best_fits[i]](time_column, *all_params_lite[i])

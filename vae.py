@@ -6,7 +6,7 @@ import torch.optim as optim
 from torch.utils.data import WeightedRandomSampler
 
 def get_rank_weights(outputs, k):
-    outputs_argsort = np.argsort(np.asarray(outputs))
+    outputs_argsort = np.argsort(-np.asarray(outputs))
     ranks = np.argsort(outputs_argsort)
     return 1 / (k * (1 + ranks))
 
@@ -26,13 +26,13 @@ def reduce_weight_variance(weights: np.array, data: np.array):
     return np.array(weights_new), np.array(data_new)
 
 class Autoencoder(nn.Module):
-    def __init__(self):
+    def __init__(self, n_components=32):
         super().__init__()
         self.encoder = None
         self.decoder = None
         self.fc_mu = None
         self.fc_logvar = None
-        self.latent_dim = 32
+        self.latent_dim = n_components
 
     def build(self, input_dim):
 
@@ -90,6 +90,7 @@ class Autoencoder(nn.Module):
                 recon_loss = criterion(recon, xb).mean(dim=1)
                 kl_div = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
                 elbo = recon_loss + kl_div
+                elbo = elbo.mean()
                 elbo.backward()
                 optimizer.step()
             if elbo < best_loss:
@@ -97,9 +98,14 @@ class Autoencoder(nn.Module):
                 best_loss = elbo
             else:
                 count += 1
-            if count > 5:
+            if count > 10:
                 break
             
+    def inverse_transform(self, X):
+        latent_tensor = torch.tensor(X, dtype=torch.float32)
+        with torch.no_grad():
+            recon = self.decoder(latent_tensor)
+        return recon.numpy()
 
     def transform(self, X):
         X_tensor = torch.tensor(X, dtype=torch.float32)
@@ -113,14 +119,14 @@ class Autoencoder(nn.Module):
         return self.transform(X)
 
 class WeightedAutoencoder(nn.Module):
-    def __init__(self):
+    def __init__(self, n_components=32):
         super().__init__()
         self.encoder = None
         self.decoder = None
         self.fc_mu = None
         self.fc_logvar = None
         self.weights_k = 1e-3
-        self.latent_dim = 32
+        self.latent_dim = n_components
 
     def build(self, input_dim):
 
@@ -159,29 +165,32 @@ class WeightedAutoencoder(nn.Module):
         recon = self.decoder(z)
         return recon, mu, logvar
 
-    def _weights(self, X, y, optim_direc):
-        if optim_direc == "min":
-            c = -1
-        if optim_direc == "max":
-            c = 1
-        else:
-            c = 1
-        ranked_weights = get_rank_weights(c * y, self.weights_k)
+    def _weights(self, X, y):
+        ranked_weights = get_rank_weights(y, self.weights_k)
         normed_weights = ranked_weights / np.mean(ranked_weights)
         weights, X = reduce_weight_variance(normed_weights, X)
         return weights, X
 
     def fit(self, X, y, optim_direc=None):
+        if isinstance(y, np.ndarray):
+            y = torch.from_numpy(y)
+        if optim_direc:
+            weights = [1 if val == "max" else -1 if val == "min" else val for val in optim_direc]
+            y = y * torch.tensor(weights)
+            if len(optim_direc) > 1:
+                y = y.sum(axis=1)
+
         perc = np.percentile(y, 50)
-        percentile_cutoff = y >= perc
+        percentile_cutoff = (y >= perc).flatten()
         X = X[percentile_cutoff]
         y = y[percentile_cutoff]
-        weights, X = self._weights(X, y, optim_direc)
+        weights, X = self._weights(X, y)
 
         input_dim = X.shape[1]
         self.build(input_dim)
         X_tensor = torch.tensor(X, dtype=torch.float32)
-        weights = torch.tensor(weights, dtype=torch.float32)
+        weights = torch.tensor(weights, dtype=torch.float32).flatten()
+
 
         dataset = TensorDataset(X_tensor, weights)
         sampler = WeightedRandomSampler(weights, len(X))
@@ -206,7 +215,7 @@ class WeightedAutoencoder(nn.Module):
                 best_loss = loss
             else:
                 count += 1
-            if count > 5:
+            if count > 10:
                 break
 
     def transform(self, X):
@@ -215,6 +224,12 @@ class WeightedAutoencoder(nn.Module):
             encoded = self.encoder(X_tensor)
             mu = self.fc_mu(encoded)
         return mu.numpy()
+
+    def inverse_transform(self, X):
+        latent_tensor = torch.tensor(X, dtype=torch.float32)
+        with torch.no_grad():
+            recon = self.decoder(latent_tensor)
+        return recon.numpy()
 
     def fit_transform(self, X, y, optim_direc=None):
         self.fit(X, y, optim_direc)
