@@ -76,32 +76,35 @@ class RoelfesEmulator:
 
         linear_params = []
         for _ in linear_idx:
-            b = np.random.uniform(0, 1)
-            a = np.random.uniform(0, (1 - b) / self.t_max)
+            b = np.random.uniform(0, 20)
+            a = np.random.uniform(0, (100 - b) / self.t_max)
             linear_params.append((a, b))
-        dec_exp_params = [(np.random.uniform(1e-10,1), np.random.uniform(1e-10,0.05),
-                           np.random.uniform(1e-10, 2 * self.t_max / 3), np.random.uniform(1e-10, 0.2))
+        dec_exp_params = [(np.random.uniform(1e-10,100), np.random.uniform(1e-10,0.05),
+                           np.random.uniform(1e-10, 2 * self.t_max / 3), np.random.uniform(1e-10, 20))
                            for _ in dec_exp_idx]
 
         return {'linear': linear_params, 'dec exp': dec_exp_params}
 
     def get_random_params(self):
-        self.mu = sorted(np.random.rand(self.space_complexity).tolist())
-        self.random_weights = np.random.rand(self.dim)
+        self.mu = sorted(np.random.uniform(0, 100, self.space_complexity).tolist())
+        self.random_weights = np.random.exponential(scale=1.0, size=self.dim)
+        self.random_weights /= np.sum(self.random_weights)
         self.params = self.generate_random_params(self.space_complexity)
+        
 
     def yield_calc(self, x):
         x = np.asarray(x)
         if x.ndim == 1:
             x = x.reshape(1, -1)
 
-        X = np.dot(x, self.random_weights)
-
-        X_min, X_max = X.min(), X.max()
+        X_min, X_max = x.min(), x.max()
         if X_max > X_min:
-            X = (X - X_min) / (X_max - X_min)
+            X = (x - X_min) / (X_max - X_min)
+            X = X * 100
         else:
             X = np.zeros_like(X)
+
+        X = np.dot(X, self.random_weights)
 
         yield_val = piecewise_yield_time_x(X, self.t_vals, self.params, self.mu)
 

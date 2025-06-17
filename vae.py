@@ -72,6 +72,12 @@ class Autoencoder(nn.Module):
         return recon, mu, logvar
 
     def fit(self, X):
+        self.input_mean = X.mean(axis=0)
+        self.input_std = X.std(axis=0) + 1e-8  # add epsilon to avoid div by zero
+
+        # Standardize X
+        X = (X - self.input_mean) / self.input_std
+
         input_dim = X.shape[1]
         self.build(input_dim)
         X_tensor = torch.tensor(X, dtype=torch.float32)
@@ -105,9 +111,11 @@ class Autoencoder(nn.Module):
         latent_tensor = torch.tensor(X, dtype=torch.float32)
         with torch.no_grad():
             recon = self.decoder(latent_tensor)
+        recon = recon * self.input_std + self.input_mean
         return recon.numpy()
 
     def transform(self, X):
+        X = (X - self.input_mean) / self.input_std
         X_tensor = torch.tensor(X, dtype=torch.float32)
         with torch.no_grad():
             encoded = self.encoder(X_tensor)
@@ -172,6 +180,12 @@ class WeightedAutoencoder(nn.Module):
         return weights, X
 
     def fit(self, X, y, optim_direc=None):
+        self.input_mean = X.mean(axis=0)
+        self.input_std = X.std(axis=0) + 1e-8  # add epsilon to avoid div by zero
+
+        # Standardize X
+        X = (X - self.input_mean) / self.input_std
+
         if isinstance(y, np.ndarray):
             y = torch.from_numpy(y)
         if optim_direc:
@@ -219,6 +233,7 @@ class WeightedAutoencoder(nn.Module):
                 break
 
     def transform(self, X):
+        X = (X - self.input_mean) / self.input_std
         X_tensor = torch.tensor(X, dtype=torch.float32)
         with torch.no_grad():
             encoded = self.encoder(X_tensor)
@@ -229,6 +244,7 @@ class WeightedAutoencoder(nn.Module):
         latent_tensor = torch.tensor(X, dtype=torch.float32)
         with torch.no_grad():
             recon = self.decoder(latent_tensor)
+        recon = recon * self.input_std + self.input_mean
         return recon.numpy()
 
     def fit_transform(self, X, y, optim_direc=None):

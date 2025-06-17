@@ -9,14 +9,11 @@ from typing import List
 import numpy as np
 
 def sample_from_simplex(d: int, n_samples: int) -> Tensor:
-    """
-    Function taken from Huawei-.. mcbo GitHub
-    """
-    sorted_samples = np.random.uniform(0, 1, (n_samples, d + 1))
-    sorted_samples[:, 0] = 0
-    sorted_samples[:, -1] = 1
-    sorted_samples.sort(-1)
-    return torch.tensor(sorted_samples[:, 1:] - sorted_samples[:, :-1])
+    sorted_samples = torch.rand((n_samples, d + 1))
+    sorted_samples[:, 0] = 0.0
+    sorted_samples[:, -1] = 1.0
+    sorted_samples, _ = torch.sort(sorted_samples, dim=-1)
+    return sorted_samples[:, 1:] - sorted_samples[:, :-1]
 
 def diverse_random_dict_sample(m: int, n_cats_per_dim: List[int]) -> Tensor:
     """
@@ -41,26 +38,24 @@ class HammingDistance(Function):
     @staticmethod
     def forward(ctx, u: Tensor, v: Tensor) -> Tensor:
         ctx.save_for_backward(u, v)
-        return torch.mean((u != v).double())
+        return (u != v).double().mean(dim=-1)
 
     @staticmethod
-    def backward(ctx, grad_output):
+    def backward(ctx, grad_output: Tensor) -> tuple[Tensor, Tensor]:
         u, v = ctx.saved_tensors
-        #Approximation gradients using dicrete generalization for hamming distance.
-        #Sigmoidal or piecewise approximation could also be considered.
-        n = len(u)
+        n = u.shape[-1]
         epsilon = 1e-5
-        grad_hamming = (u - v) / (n * torch.abs(u - v) + epsilon)
-        return grad_hamming, grad_hamming
+        diff = u - v
+        grad = diff / (n * diff.abs() + epsilon)
+        hamming_grad = grad_output.unsqueeze(-1) * grad
+        return hamming_grad, -hamming_grad
 
-def hed_transform(A, X):
-    observations, _ = X.shape
-    reduced_dim, _ = A.shape
-    dim_reduc_x = torch.zeros((observations, reduced_dim))
-    for observation in range(observations):
-        for m in range(reduced_dim):
-            dim_reduc_x[observation, m] = HammingDistance.apply(A[m,:], X[observation,:])
-    return dim_reduc_x
+def hed_transform(A: Tensor, X: Tensor) -> Tensor:
+    # A: [reduced_dim, d], X: [batch_size, d]
+    A_exp = A.unsqueeze(0).expand(X.size(0), -1, -1)  # [batch, reduced_dim, d]
+    X_exp = X.unsqueeze(1).expand(-1, A.size(0), -1)  # [batch, reduced_dim, d]
+    distances = HammingDistance.apply(A_exp, X_exp)  # [batch, reduced_dim]
+    return distances
 
 class HammingEmbeddingDictionary(InputTransform):
     r"""Abstract base class for input transforms.
@@ -117,27 +112,22 @@ class HammingEmbeddingDictionary(InputTransform):
                 return self.transform(X)
 
     def transform(self, X: Tensor) -> Tensor:
-        
-        r"""Transform the inputs to a model.
-
-        Args:
-            X: A `batch_shape x n x d`-dim tensor of inputs.
-
-        Returns:
-            A `batch_shape x n x d`-dim tensor of transformed inputs.
-        """
         cont_dims = [i for i in range(X.shape[-1]) if i not in self.cat_dims]
         if len(X.shape) > 2:
             X_cat = X[:, :, self.cat_dims]
             X_cont = X[:, :, cont_dims]
-            samples, candidates = X_cat.shape[0], X_cat.shape[1]
-            X_cat_red_dim = torch.zeros(samples, candidates, self.reduced_cat_dim)
-            for i in range(samples):
-                X_cat_red_dim[i,:,:] = hed_transform(self.dictionary, X_cat[i,:,:])
-            X_red_dim = torch.cat((X_cat_red_dim, X_cont), axis=2)
+            batch, n, _ = X_cat.shape
+
+            X_cat_flat = X_cat.reshape(batch * n, -1)
+
+            X_cat_red_flat = hed_transform(self.dictionary, X_cat_flat)
+
+            X_cat_red = X_cat_red_flat.view(batch, n, self.reduced_cat_dim)
+
+            X_red_dim = torch.cat((X_cat_red, X_cont), dim=-1)
         else:
             X_cat = X[:, self.cat_dims]
             X_cont = X[:, cont_dims]
-            X_cat_red_dim = hed_transform(self.dictionary, X_cat)
-            X_red_dim = torch.cat((X_cat_red_dim, X_cont), axis=1)
+            X_cat_red = hed_transform(self.dictionary, X_cat)
+            X_red_dim = torch.cat((X_cat_red, X_cont), dim=-1)
         return X_red_dim

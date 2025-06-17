@@ -50,34 +50,6 @@ def general_saasbo_gp(X, Y):
         gp = models_list[0]
     return gp
 
-def reverse_one_hot(arr : np.ndarray | pd.DataFrame , var_names : list[str], cat_cols : list[str], var_names_original : list[str], **kwargs):
-    """
-    Performs reverse one-hot encoding on the given array or dataframe.
-
-    Parameters
-    ----------
-    arr : numpy array or dataframe of shape .
-
-    var_names : list of strings with the names of the variables in the array. They have to be the same size as n_features in arr.
-
-    cat_cols : list of strings with the names of the categorical columns.
-
-    var_names_original : list of strings with the original order of the variable names.
-
-    Returns
-    -------
-    Pandas DataFrame with the categorical variables reversed from one-hot encoding to their original categories.
-    """
-    df = pd.DataFrame(arr, columns=var_names)
-
-    for cat in cat_cols:
-        cat_cols = [col for col in var_names if col.startswith(f"{cat}_")]
-        df[cat] = df[cat_cols].idxmax(axis=1).str.replace(f"{cat}_", "")
-        df.drop(columns=cat_cols, inplace=True)
-    # Reorder columns to match original
-    df = df[[col for col in var_names_original if col in df.columns]]
-    return df
-
 def snap_categories(arr : np.ndarray, var_names : list[str], cat_vals : dict[str , list[float]], **kwargs):
     """
     Puts (snaps) each categorical variable in arr to the closest valid category in cat_vals per categorical variable.
@@ -101,8 +73,82 @@ def snap_categories(arr : np.ndarray, var_names : list[str], cat_vals : dict[str
         # Chooses minimum distance between valid categories (valid_vals) and the actual candidate value (X).
         data[col] = data[col].apply(lambda x, current_valid_vals=valid_vals:
                                     min(current_valid_vals, key=lambda v: abs(x - v)))
-
+    
+    data = data.astype(float)
     return data if is_df else data.to_numpy()
+
+def reverse_one_hot(arr : np.ndarray | pd.DataFrame , var_names : list[str], cat_cols : list[str], var_names_original : list[str], **kwargs):
+    """
+    Performs reverse one-hot encoding on the given array or dataframe.
+
+    Parameters
+    ----------
+    arr : numpy array or dataframe of shape .
+
+    var_names : list of strings with the names of the variables in the array. They have to be the same size as n_features in arr.
+
+    cat_cols : list of strings with the names of the categorical columns.
+
+    var_names_original : list of strings with the original order of the variable names.
+
+    Returns
+    -------
+    Pandas DataFrame with the categorical variables reversed from one-hot encoding to their original categories.
+    """
+    df = pd.DataFrame(arr, columns=var_names)
+
+    for cat in cat_cols:
+        prefix = f"{cat}_"
+        matching_cols = [col for col in df.columns if col.startswith(prefix)]
+
+        if matching_cols:
+            df[cat] = df[matching_cols].idxmax(axis=1).str.replace(prefix, "", regex=False)
+            df.drop(columns=matching_cols, inplace=True)
+
+    final_cols = [col for col in var_names_original if col in df.columns]
+    df = df[final_cols]
+    return df
+
+def snap_and_reverse_one_hot(
+    arr: np.ndarray | pd.DataFrame,
+    var_names: list[str],
+    cat_vals: dict[str, list[float]],
+    cat_cols: list[str],
+    var_names_original: list[str]
+) -> pd.DataFrame:
+    """
+    Applies category snapping followed by reverse one-hot encoding.
+
+    Parameters
+    ----------
+    arr : np.ndarray or pd.DataFrame
+        Input data to be snapped and then decoded.
+    var_names : list[str]
+        Names of the features in arr.
+    cat_vals : dict[str, list[float]]
+        Valid category values for each categorical column.
+    cat_cols : list[str]
+        Names of original categorical columns (pre one-hot).
+    var_names_original : list[str]
+        Desired output column order.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with categories snapped and one-hot columns reversed.
+    """
+    snapped = snap_categories(
+        arr=arr,
+        var_names=var_names,
+        cat_vals=cat_vals
+    )
+
+    return reverse_one_hot(
+        arr=snapped,
+        var_names=var_names,
+        cat_cols=cat_cols,
+        var_names_original=var_names_original
+    )
 
 def df_reordering(arr : np.ndarray, var_names_original : list[str], **kwargs):
     """
@@ -140,8 +186,8 @@ class FeaturePreprocessor:
         self.cat_classes = None
         if cat_dims is not None:
             self.cat_vals = {col: sorted(train_x[col].unique().tolist()) for col in cat_dims}
-            cat_dict_keys = list(self.cat_vals.keys())
-            self.cat_classes = [int(max(self.cat_vals[key])) for key in cat_dict_keys]
+            self.cat_dict_keys = list(self.cat_vals.keys())
+            self.cat_classes = [int(max(self.cat_vals[key])) for key in self.cat_dict_keys]
         return train_y
 
     def _setup_model_and_clean_up_method(self, train_x, cat_dims, model_type):
@@ -155,10 +201,20 @@ class FeaturePreprocessor:
             self.input_transform = HammingEmbeddingDictionary(cat_dims=cat_dims,
                                       reduced_cat_dim=self.dictionary_m,
                                       classes_per_cat=self.cat_classes)
+            self.clean_up_method = snap_categories
         elif model_type != "Mixed Single-Task GP" and cat_dims:
-            dummies = pd.get_dummies(train_x[cat_dims], columns=cat_dims).astype(int)
-            train_x = pd.concat([train_x.drop(columns=cat_dims), dummies], axis=1)
+            multi_cat_dims = [col for col in cat_dims if train_x[col].nunique() > 2]
+            binary_cat_dims = [col for col in cat_dims if train_x[col].nunique() == 2]
+            dummies = pd.DataFrame(index=train_x.index)
+            if multi_cat_dims:
+                dummies = pd.get_dummies(train_x[multi_cat_dims], columns=multi_cat_dims)
+                train_x = pd.concat([train_x.drop(columns=multi_cat_dims), dummies], axis=1).astype(float)
             self.var_names = list(train_x.columns)
+            cat_dims = list(dummies.columns) + binary_cat_dims
+            self.cat_vals = {col: sorted(train_x[col].unique().tolist()) for col in cat_dims}
+            self.cat_dict_keys = list(self.cat_vals.keys())
+            self.cat_classes = [int(max(self.cat_vals[key])) for key in self.cat_dict_keys]
+            cat_dims = [self.var_names.index(v) for v in cat_dims]
             self.clean_up_method = reverse_one_hot
         else:
             model_type = "Single-Task GP"
@@ -174,11 +230,24 @@ class FeaturePreprocessor:
 
         self.fixed_features_list = None
         if self.cat_dims is not None:
-            all_cats = tuple(self.cat_vals.values())
-            all_cat_permutations = np.array(np.meshgrid(*all_cats)).T.reshape(-1,len(self.cat_dims))
-            all_cat_permutations = np.ndarray.tolist(all_cat_permutations)
-            self.fixed_features_list = [dict(zip(self.cat_dims, permutation))
-                                        for permutation in all_cat_permutations]
+            if len(self.cat_dims) < self.max_cat_dims:
+                all_cats = tuple(self.cat_vals.values())
+                all_cat_permutations = np.array(np.meshgrid(*all_cats)).T.reshape(-1, len(self.cat_dims))
+                all_cat_permutations = all_cat_permutations.tolist()
+                self.fixed_features_list = [dict(zip(self.cat_dims, permutation)) for permutation in all_cat_permutations]
+            else:
+                chosen_permutations = []
+                for _ in range(round(len(self.cat_dims) / 2) + self.num_cat_fixed_features):
+                    permutation = [np.random.choice(self.cat_vals[dim]) for dim in self.cat_dict_keys]
+                    chosen_permutations.append(permutation)
+                self.fixed_features_list = [dict(zip(self.cat_dims, permutation)) for permutation in chosen_permutations]
+            amount_to_remove = round(len(self.cat_dims) / 2)
+            for d in self.fixed_features_list:
+                keys = list(d.keys())
+                keys_to_remove = np.random.choice(keys, size=amount_to_remove, replace=False)
+                for key in keys_to_remove:
+                    del d[key]
+
 
     def _build_dicts(self):
         """
@@ -225,7 +294,7 @@ class AcquisitionHandler:
         self.acq_func_name = None
         self.y_names = None
 
-    def _acqf_optimizer(self, train_x : torch.Tensor, q : int, bounds, believer_mode: bool = False, input_weights=None, optim_method="Multi-Start"):
+    def _acqf_optimizer(self, train_x : torch.Tensor, q : int, bounds, believer_mode: bool = False, input_weights=None, optim_method="Multi-Start", **kwargs):
         """
 
 
@@ -259,7 +328,7 @@ class AcquisitionHandler:
 
         candidate, _ = self.optimizer_dict[optim_method][0](acq_func, bounds=self.bounds, q=q,
                                      num_restarts=self.num_restarts, raw_samples=self.raw_samples,
-                                     **self.optimizer_dict[optim_method][1])
+                                     **self.optimizer_dict[optim_method][1], **kwargs)
 
         if not believer_mode:
             self.acq_func = acq_func
@@ -346,7 +415,8 @@ class BayesianOptimization(FeaturePreprocessor, AcquisitionHandler):
         self.num_restarts = 5
         self.raw_samples = 20
         self.dictionary_m = 128
-
+        self.num_cat_fixed_features = 8
+        self.max_cat_dims = 5
         self.cat_vals = None
 
     def _build_model(self, train_x : torch.Tensor, train_y : torch.Tensor, believer_mode: bool = False):
@@ -407,6 +477,7 @@ class BayesianOptimization(FeaturePreprocessor, AcquisitionHandler):
         """
         self.optim_direc = optim_direc
         train_x = X.drop(y, axis=1)
+        self.clean_var_names = list(train_x.columns)
         self.clean_X_cols = list(X.columns)
         self.var_names = list(train_x.columns)
         train_y = X[y]
@@ -414,8 +485,8 @@ class BayesianOptimization(FeaturePreprocessor, AcquisitionHandler):
         self.clean_up_method = df_reordering
 
         train_x, cat_dims, model_type = self._setup_model_and_clean_up_method(train_x, cat_dims, model_type)
-        train_x = train_x.to_numpy().reshape(-1,np.shape(train_x)[1])
-        train_y = train_y.to_numpy().reshape(-1,np.shape(train_y)[1])
+        train_x = train_x.to_numpy(dtype=np.float64).reshape(-1,np.shape(train_x)[1])
+        train_y = train_y.to_numpy(dtype=np.float64).reshape(-1,np.shape(train_y)[1])
         self.train_x = torch.tensor(train_x)
         self.train_y = torch.tensor(train_y)
         self.y_names = y
@@ -464,11 +535,19 @@ class BayesianOptimization(FeaturePreprocessor, AcquisitionHandler):
         ----------
         It is possible to implement other BoTorch compliant optimizers methods through the _build_dicts function in the FeaturePreprocessor class.
         """
+        if (q_sampling_method=="Sequential") and (optim_method=="Multi-Start"):
+            seq_dict = {'sequential' : True}
+            q_sampling_method = "Monte Carlo"
+        else:
+            seq_dict = {}
+        if optim_method == "Sequential Greedy" and self.model_type != "Mixed Single-Task GP":
+            self.clean_up_method = snap_and_reverse_one_hot
+        
         q, analytic_iter_n = self._acq_func_determiner(acq_func_name=acq_func_name,
                                                        q_sampling_method=q_sampling_method, q=q)
         candidate, _ = self._acqf_optimizer(train_x=self.train_x, q=q,
                                             bounds=bounds, input_weights=input_weights,
-                                            optim_method=optim_method)
+                                            optim_method=optim_method, **seq_dict)
         candidate = candidate.round(decimals=2)
         prediction, _ = self._predict(candidate)
 
@@ -477,14 +556,16 @@ class BayesianOptimization(FeaturePreprocessor, AcquisitionHandler):
                                                           analytic_iter_n=analytic_iter_n, bounds=bounds,
                                                           input_weights=input_weights, optim_method=optim_method)
         candidate, prediction = candidate.detach().numpy(), prediction.detach().numpy()
-
+        
+        pred_df = pd.DataFrame(prediction, columns=self.y_names)
+        candidate_df = pd.DataFrame(candidate, columns=self.var_names)
+        suggested_df = pd.concat((candidate_df, pred_df),axis=1)
+        suggested_df = self.clean_up_method(arr=suggested_df, var_names=list(suggested_df.columns),
+                        cat_vals=self.cat_vals, cat_cols=self.cat_cols,
+                        var_names_original=self.clean_X_cols)
+        candidate = suggested_df[self.clean_var_names].to_numpy(dtype=np.float32)
+        prediction = suggested_df[self.y_names].to_numpy(dtype=np.float32)
         if export_df:
-            pred_df = pd.DataFrame(prediction, columns=self.y_names)
-            candidate_df = pd.DataFrame(candidate, columns=self.var_names)
-            suggested_df = pd.concat((candidate_df, pred_df),axis=1)
-            suggested_df = self.clean_up_method(arr=suggested_df, var_names=list(suggested_df.columns),
-                            cat_vals=self.cat_vals, cat_cols=self.cat_cols,
-                            var_names_original=self.clean_X_cols)
             return suggested_df
         else:
             return candidate, prediction
