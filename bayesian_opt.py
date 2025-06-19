@@ -24,19 +24,22 @@ from botorch.exceptions import InputDataWarning
 # Ignore only the scaling warning
 warnings.filterwarnings("ignore", category=InputDataWarning)
 
-def general_saasbo_gp(X, Y):
+def general_saasbo_gp(X : torch.Tensor, Y : torch.Tensor) -> ModelListGP:
     """
-
+    Creates a model list of SAASBO GPs for multiple outputs.
 
     Parameters
     ----------
-    X : .
+    X : Tensor
+        Input data with shape (n_samples, n_features).
 
-    Y : .
+    Y : Tensor
+        Output data with shape (n_samples, n_outputs).
 
     Returns
     -------
-
+    gp : ModelListGP instance
+        Contains SAASBO GPs for each output in Y.
     """
     models_list = []
     for i in range(Y.shape[1]):
@@ -50,21 +53,31 @@ def general_saasbo_gp(X, Y):
         gp = models_list[0]
     return gp
 
-def snap_categories(arr : np.ndarray, var_names : list[str], cat_vals : dict[str , list[float]], **kwargs):
+def snap_categories(
+    arr : np.ndarray,
+    var_names : list[str],
+    cat_vals : dict[str ,
+    list[float]],
+    **kwargs
+    ) -> np.ndarray | pd.DataFrame:
     """
     Puts (snaps) each categorical variable in arr to the closest valid category in cat_vals per categorical variable.
 
     Parameters  
     ----------
-    arr : numpy array or dataframe of shape (n_samples, n_features).
+    arr : numpy array or dataframe
+        Input data with shape (n_samples, n_features) to be snapped to valid categories.
 
-    var_names : list of strings with the names of the variables in the array. var_names has to be the same length as n_features in arr.
+    var_names : list of strings
+        Names of the variables in the array. var_names has to be the same length as n_features in arr.
 
-    cat_vals : dictionary where the keys are the names of each catregory and the values are lists of valid values for that category. 
+    cat_vals : dictionary
+        The keys are the names of each catregory and the values are lists of valid values for that category. 
 
     Returns
     -------
-    Pandas Dataframe or Numpy array with the same shape as arr, but with categorical variables snapped to the closest valid category value.
+    Pandas Dataframe or Numpy array
+        Same shape as arr, but with categorical variables snapped to the closest valid category value.
     """
     is_df = isinstance(arr, pd.DataFrame)
     data = pd.DataFrame(arr, columns=var_names)
@@ -77,23 +90,33 @@ def snap_categories(arr : np.ndarray, var_names : list[str], cat_vals : dict[str
     data = data.astype(float)
     return data if is_df else data.to_numpy()
 
-def reverse_one_hot(arr : np.ndarray | pd.DataFrame , var_names : list[str], cat_cols : list[str], var_names_original : list[str], **kwargs):
+def reverse_one_hot(
+    arr : np.ndarray | pd.DataFrame ,
+    var_names : list[str],
+    cat_cols : list[str],
+    var_names_original : list[str], **kwargs
+    )-> pd.DataFrame:
     """
     Performs reverse one-hot encoding on the given array or dataframe.
 
     Parameters
     ----------
-    arr : numpy array or dataframe of shape .
+    arr : numpy array or dataframe
+        Input data with shape (n_samples, n_features) to be reversed from one-hot encoding to original categories.
 
-    var_names : list of strings with the names of the variables in the array. They have to be the same size as n_features in arr.
+    var_names : list of strings
+        Names of the variables in the array. var_names has to be the same length as n_features in arr.
 
-    cat_cols : list of strings with the names of the categorical columns.
+    cat_cols : list of strings
+        Names of the categorical columns.
 
-    var_names_original : list of strings with the original order of the variable names.
+    var_names_original : list of strings
+        Containing the original order of the variable names.
 
     Returns
     -------
-    Pandas DataFrame with the categorical variables reversed from one-hot encoding to their original categories.
+    df : Pandas DataFrame
+        Contains categorical variables reversed from one-hot encoding to their original categories.
     """
     df = pd.DataFrame(arr, columns=var_names)
 
@@ -121,20 +144,24 @@ def snap_and_reverse_one_hot(
 
     Parameters
     ----------
-    arr : np.ndarray or pd.DataFrame
-        Input data to be snapped and then decoded.
-    var_names : list[str]
-        Names of the features in arr.
-    cat_vals : dict[str, list[float]]
-        Valid category values for each categorical column.
-    cat_cols : list[str]
-        Names of original categorical columns (pre one-hot).
-    var_names_original : list[str]
-        Desired output column order.
+    arr : numpy array or dataframe
+        Input data with shape (n_samples, n_features) of input data to be snapped to valid categories and reversed from one-hot encoding.
+
+    var_names : list of strings
+        Names of the variables in the array. var_names has to be the same length as n_features in arr.
+
+    cat_vals : dictionary
+        The keys are the names of each catregory and the values are lists of valid values for that category. 
+
+    cat_cols : list of strings
+        Names of the categorical columns.
+
+    var_names_original : list of strings
+        Containing the original order of the variable names.
 
     Returns
     -------
-    pd.DataFrame
+    df : Pandas DataFrame
         DataFrame with categories snapped and one-hot columns reversed.
     """
     snapped = snap_categories(
@@ -150,34 +177,107 @@ def snap_and_reverse_one_hot(
         var_names_original=var_names_original
     )
 
-def df_reordering(arr : np.ndarray, var_names_original : list[str], **kwargs):
+def df_reordering(
+    arr : np.ndarray,
+    var_names_original : list[str],
+    **kwargs
+    ) -> pd.DataFrame | np.ndarray:
     """
     Reorders the columns of a dataframe or numpy array to match the original order of variable names.
 
     Parameters
     ----------
-    arr : Pandas DataFrame or Numpy array of shape (n_samples, n_features).
+    arr : numpy array or dataframe
+        Input data with shape (n_samples, n_features) to be reordered.
 
-    var_names_original : list of strings with the original order of variable names.
+    var_names_original : list of strings
+        Containing the original order of the variable names.
 
     Returns
     -------
-    Pandas DataFrame or Numpy array with the columns reordered to match the original order of variable names.
+    arr : Pandas DataFrame or Numpy array
+        Contains the columns reordered to match the original order of variable names.
     """
     return arr[[col for col in var_names_original
                                              if col in arr.columns]]
 
 class FeaturePreprocessor:
     """
+    A class used to preprocess features, especially handling categorical inputs,
+    and set up models, acquisition functions, and optimizers for Bayesian Optimization.
 
+    Attributes
+    ----------
+    cat_cols : list of strings or None
+        Names of categorical columns in the training data.
+
+    cat_vals : dictionary or None
+        Dictionary mapping each categorical column to its sorted unique values.
+
+    cat_dict_keys : list of strings
+        List of keys (column names) from `cat_vals`.
+
+    cat_classes : list of integers or None
+        The number of classes per categorical variable (used for embedding or one-hot encoding).
+
+    input_transform : callable or None
+        If using embeddings (e.g., Hamming Embedding Dictionary), this is the transform applied to the inputs.
+
+    clean_up_method : callable
+        Method used to clean up or reverse transformations (e.g., reverse one-hot encoding, snapping categories).
+
+    var_names : list of strings
+        Column names of the transformed training data. Helps track features after transformations.
+
+    ref_point : Tensor
+        Reference point for hypervolume calculations in multi-objective optimization.
+
+    partitioning : DominatedPartitioning or None
+        Used for calculating hypervolume improvement in multi-objective acquisition functions.
+
+    fixed_features_list : list of dictionries or None
+        List of fixed feature combinations for categorical dimensions used in the optimizer.
+
+    gp_dict : dictionary
+        Dictionary mapping model types to [GP model class, kwargs] for instantiation.
+
+    acq_dict : dictionary
+        Dictionary mapping acquisition function names to [class, kwargs, cost-aware wrapper].
+
+    optimizer_dict : dictionary
+        Dictionary mapping optimizer strategies to [optimizer function, kwargs].
     """
-    def _set_up_feature_processing(self, train_x : torch.Tensor, train_y, optim_direc, cat_dims):
+    def _set_up_feature_processing(
+        self,
+        train_x : torch.Tensor,
+        train_y : torch.Tensor,
+        optim_direc : list[str | float] = None,
+        cat_dims : list[str] = None
+        ) -> torch.Tensor:
         """
+        Sets up the feature processing for the training data.
+
         Attributes
         ----------
+        train_x : Tensor
+            Training data with shape (n_samples, n_features).
+
+        train_y : Tensor
+            Target data with shape (n_samples, n_targets).
+
+        optim_direc : list of strings or weights as floats with len(y). 
+            Strings should be "min" or "max" to show whether we minimize or maximize this target. If left empty, all targets will be maximized.
+            Example: ["min"],["max"], [-1(any negative number for minimizing)] or [1(any positive number for maximizing)] for a single objective optimization problem, 
+            ["max", "min"] or [-1, 1] for a multi-objective optimization problem with two objectives, etc.
+
+        cat_dims : list of strings
+            Names corresponding to the columns of the input X that should be considered categorical features.
+            If None, no categorical features will be considered.
+
         Returns
         -------
-        
+        train_y : Tensor
+            Target data with shape (n_samples, n_targets) after processing.
         """
         if optim_direc:
             weights = [1 if val == "max" else -1 if val == "min" else val for val in optim_direc]
@@ -190,7 +290,32 @@ class FeaturePreprocessor:
             self.cat_classes = [int(max(self.cat_vals[key])) for key in self.cat_dict_keys]
         return train_y
 
-    def _setup_model_and_clean_up_method(self, train_x, cat_dims, model_type):
+    def _setup_model_and_clean_up_method(self, train_x : torch.Tensor, cat_dims : list[str], model_type : str) -> tuple[torch.Tensor, list[int], str]:
+        """
+        Sets up the model type and the clean-up method based on the input data and categorical dimensions.
+
+        Parameters
+        ----------
+        train_x : Tensor
+            Training data with shape (n_samples, n_features).
+
+        cat_dims : list of strings
+            Names corresponding to the columns of the input X that should be considered categorical features.
+
+        model_type : string
+            Can be one of ["Single-Task GP", "Mixed Single-Task GP", "SAASBO", "HED"].
+
+        Returns
+        -------
+        train_x : Tensor
+            Training data with shape (n_samples, n_features) after processing.
+
+        cat_dims : list of integers
+            Indices of the categorical dimensions in the train_x.
+
+        model_type : string
+            The model type to use for the Gaussian process.
+        """
         self.input_transform = None
         if (model_type is None or model_type == "Mixed Single-Task GP") and cat_dims:
             model_type = "Mixed Single-Task GP"
@@ -221,6 +346,9 @@ class FeaturePreprocessor:
         return train_x, cat_dims, model_type
 
     def _dict_setup(self):
+        """
+        Support function that calculates values to be used in the _build_dicts function.
+        """
         self.ref_point,_ = torch.min(self.train_y, 0)
         self.partitioning = None
         if len(self.y_names) > 1:
@@ -251,7 +379,8 @@ class FeaturePreprocessor:
 
     def _build_dicts(self):
         """
-
+        Builds dictionaries for the Gaussian process models, acquisition functions, and optimizers.
+        It is possible include other BoTorch compliant GP models, acquisition functions, and optimizers by adding them to their respective dictionaries.
         """
         self._dict_setup()
 
@@ -284,37 +413,73 @@ class FeaturePreprocessor:
 
         self.optimizer_dict = {
             "Multi-Start": [optimize_acqf, dict()],
-            "Sequential Greedy": [optimize_acqf_mixed, {"fixed_features_list": self.fixed_features_list}]
+            "Sequential Fixed Subspace": [optimize_acqf_mixed, {"fixed_features_list": self.fixed_features_list}]
         }
 
 
 class AcquisitionHandler:
+    """
+    Determines and optimizes the acquisition function for Bayesian optimization. 
+    Also does believer update when required.
 
+    Attributes
+    ----------
+    acq_func_name : string or None
+        Name of the acquisition function to use. 
+        If None, will default to "LogEI" for single-objective optimization and "EHVI" for multi-objective optimization.
+
+    y_names : list of strings or None
+        Names of the target variables in the training data. 
+        Used to determine whether the optimization is single or multi-objective.
+    """
     def __init__(self):
         self.acq_func_name = None
         self.y_names = None
 
-    def _acqf_optimizer(self, train_x : torch.Tensor, q : int, bounds, believer_mode: bool = False, input_weights=None, optim_method="Multi-Start", **kwargs):
+    def _acqf_optimizer(
+        self,
+        train_x : torch.Tensor,
+        q : int, bounds,
+        believer_mode: bool = False,
+        input_weights=None,
+        optim_method="Multi-Start", 
+        **kwargs
+        ) -> tuple[torch.Tensor, torch.Tensor]:
         """
-
+        Optimizes the acquisition function to return candidates for the next iteration of Bayesian optimization.
 
         Parameters
         ----------
-        train_x : torch.Tensor of shape (n_samples, n_features) of training data.
+        train_x : Tensor
+            Training data with shape (n_samples, n_features).
 
-        q : int, number of candidates to return.
+        q : integer
+            Number of candidates to return.
 
-        bounds : 
+        bounds : list of 2 lists
+            The first contating the lower bounds for each variable the latter the upper bounds for each variable.
+            Example: [[1e-5, 1e-5, 1e-5],[14, 1, 2]] for data with 3 features. 
 
-        believer_mode : bool, if True,
+        believer_mode : bool
+            If True, will perform the Believer method to update the candidates and predictions.
+            Otherwise, no Believer update will be performed.
 
-        input_weights : 
+        input_weights : list of floats
+            Weights for each feature in the input space.
+            If None, will not use a cost model. 
 
-        optim_method : str, a
+        optim_method : string
+            The optimization method to use for the acquisition function optimization.
+            Can be "Multi-Start" or "Sequential Fixed Subspace".
 
         Returns
         -------
-        
+        candidate : Tensor
+            Suggested candidates with shape (q, n_features).
+
+        _ : Tensor
+            The predicted values for the candidates.
+            It is not used in this method, but is returned for consistency with BoTorch's optimize_acqf interface.
         """
         acq_func = self.acq_dict[self.acq_func_name][0](self.gp, **self.acq_dict[self.acq_func_name][1])
         if input_weights is not None:
@@ -337,7 +502,37 @@ class AcquisitionHandler:
             self.acq_func = acq_func
         return candidate, _
 
-    def _acq_func_determiner(self, acq_func_name : str, q_sampling_method : str, q : int):
+    def _acq_func_determiner(
+        self,
+        acq_func_name : str,
+        q_sampling_method : str,
+        q : int
+        ) -> tuple[int, int | None]:
+        """
+        Determines the acquisition function while takng into account wheter believer uodate is used or not.
+
+        Parameters
+        ----------
+        q : integer
+            Number of candidates to specify whether the acquisition function is single or multi-objective.
+
+        acq_func_name : string
+            Name of the acquisition function to use. 
+            If None, will default to "LogEI" for single-objective optimization and "EHVI" for multi-objective optimization.
+
+        q_sampling_method : string
+            the sampling method to use for the acquisition function optimization.
+            Can be "Monte Carlo" or "Believer". If None, will default to "Monte Carlo" if q > 1 and "Believer" if q = 1.
+            If "Believer", will return the number of analytic iterations to run for the Believer method.
+
+        Returns
+        -------
+        q : integer
+            Number of candidates to return. If q_sampling_method is "Believer", will be set to 1.
+
+        analytic_iter_n : integer or None
+            Number of analytic iterations if Believer method is specified, otherwise None.
+        """
         if acq_func_name is None and len(self.y_names) > 1:
             acq_func_name = "EHVI"
         elif acq_func_name is None and len(self.y_names) == 1:
@@ -355,14 +550,49 @@ class AcquisitionHandler:
         self.acq_func_name = acq_func_name
         return q, analytic_iter_n
 
-    def _believer_update(self, candidate, prediction, analytic_iter_n,
-                         bounds, input_weights, optim_method="Multi-Start"):
+    def _believer_update(
+        self,
+        candidate : torch.Tensor,
+        prediction : torch.Tensor, analytic_iter_n : int,
+        bounds : list[float] = None,
+        input_weights : list[float] = None,
+        optim_method : str = "Multi-Start"
+        ) -> tuple[torch.Tensor, torch.Tensor]:
         """
+        Updates the candidates and predictions using the Believer method.
+        The Believer method will add new candidates to the existing ones and retrain the model with the new candidates and their predictions.
+        The method will keep going until the number of iterations reaches analytic_iter_n(exclusive).
+
         Parameters
         ----------
+        candidate : Tensor
+            Current candidates with shape (n_samples, n_features).
+
+        prediction : Tensor
+            Predictions for each candidate with shape (n_samples, n_targets).
+
+        analytic_iter_n : integer 
+            Number of iterations to run the Believer method for(exclusive).
+
+        bounds : list of 2 lists
+            First contating the lower bounds for each variable the latter the upper bounds for each variable.
+            Example: [[1e-5, 1e-5, 1e-5],[14, 1, 2]] for data with 3 features.
+
+        input_weights : list of floats
+            Weights for each feature in the input space.
+            If None, will not use a cost model.
+
+        optim_method : string
+            The optimization method to use for the acquisition function optimization.
+            Can be "Multi-Start" or "Sequential Fixed Subspace".
+
         Returns
         -------
+        all_candidates : Tensor
+            All candidates with shape (n_samples, n_features) suggested so far.
 
+        all_predictions : Tensor
+            Predictions of shape (n_samples, n_targets) for each candidate.
         """
         believer_iter = 0
         all_candidates = candidate
@@ -395,16 +625,53 @@ class BayesianOptimization(FeaturePreprocessor, AcquisitionHandler):
 
     Attributes
     ----------
-    gp_mean
-    gp_cov
-    gp
-    ucb_hyperparam
-    num_restarts
-    raw_samples
-    var_names
-    train_x
-    train_y
+    gp_mean : Tensor
+        Predictive mean with shape (n_samples, n_targets) of the Gaussian Process.
 
+    gp_cov : torch.Tensor
+        The predictive covariance shape (n_samples, n_samples, n_targets) of the Gaussian Process.
+
+    gp : BoTorch GP model
+        The underlying GP model, e.g., SingleTaskGP, MixedSingleTaskGP, SaasFullyBayesianSingleTaskGP, or ModelListGP.
+
+    ucb_hyperparam : float
+        Hyperparameter for the Upper Confidence Bound acquisition function.
+
+    num_restarts : integer
+        Number of restarts used during acquisition function optimization.
+
+    raw_samples : integer
+        Number of raw samples used during acquisition function optimization.
+
+    dictionary_m : integer
+        Number of dictionary atoms used in learned dictionary embedding for categorical features.
+
+    num_cat_fixed_features : integer
+        Number of fixed dimensions for categorical features after embedding.
+
+    max_cat_dims : integer
+        Maximum dimensionality for categorical features after transformation.
+
+    cat_vals : dictionary or None
+        Stores categorical value encodings for inverse transformation.
+
+    cat_dims : list of strings
+        Names of input features treated as categorical.
+
+    var_names : list of strrings
+        Names of input features used in the model.
+
+    train_x : Tensor
+        Tensor of input training data.
+
+    train_y : Tensor
+        Tensor of target training data.
+
+    y_names : list of strings
+        Names of the target variables.
+
+    model_type : strings
+        Type of GP model used ("Single-Task GP", "Mixed Single-Task GP", "SAASBO", or "HED").
     """
 
     def __init__(self):
@@ -420,6 +687,20 @@ class BayesianOptimization(FeaturePreprocessor, AcquisitionHandler):
         self.cat_vals = None
 
     def _build_model(self, train_x : torch.Tensor, train_y : torch.Tensor, believer_mode: bool = False):
+        """
+        Builds the Gaussian process model based on the training data and the model type.
+
+        Parameters
+        ----------
+        train_x : Tensor
+            Training data with shape (n_samples, n_features).
+
+        train_y : Tensor
+            Target data with shape (n_samples, n_targets).
+
+        believer_mode : bool
+            If True, will create a new GP every time a new candidate is suggested.
+        """
         self._build_dicts()
         if believer_mode is False:
             self.gp = self.gp_dict[self.model_type][0](train_x, train_y, **self.gp_dict[self.model_type][1])
@@ -427,8 +708,23 @@ class BayesianOptimization(FeaturePreprocessor, AcquisitionHandler):
         else:
             self.gp = self.gp_dict[self.model_type][0](train_x, train_y, **self.gp_dict[self.model_type][1])
 
-    def _predict(self, X : torch.Tensor):
-         
+    def _predict(self, X : torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Predicts the mean(actual prediction) and variance of the posterior for the given input points.
+
+        Parameters
+        ----------
+        X : Tensor
+            Input data of shape (n_samples, n_features) for prediction.
+
+        Returns
+        -------
+        prediction : Tensor
+            Predicted values of shape (n_samples, n_targets) for each feature.
+
+        variance : Tensor
+            Predicted variances with shape (n_samples, n_targets) for each feature.
+        """
         if (len(self.y_names) == 1 and self.model_type == "SAASBO"):
             prediction = self.gp.posterior(X).mean.mean(dim=0)
             variance = self.gp.posterior(X).variance.mean(dim=0)
@@ -446,28 +742,41 @@ class BayesianOptimization(FeaturePreprocessor, AcquisitionHandler):
             variance = self.gp.posterior(X).variance
         return prediction, variance
 
-    def fit(self, X : pd.DataFrame, y: list[str], optim_direc : list[str | float] = None, cat_dims : list[str] = None, model_type : str = None):
+    def fit(
+        self,
+        X : pd.DataFrame,
+        y: list[str],
+        optim_direc : list[str | float] = None,
+        cat_dims : list[str] = None,
+        model_type : str = None
+        ) -> "BayesianOptimization":
         """
         Fits the BayesianOptimization model to the training data.
 
         Parameters
         ----------
-        X : dateaframe of shape (n_samples, n_features) of training data.
+        X : Pandas Dateaframe
+            Training datta with shape (n_samples, n_features).
 
-        y : list of strings of the names corresponding to the columns for target data found in X.
+        y : list of strings
+            Names corresponding to the columns for target data found in X.
 
-        optim_direc : list of strings or weights as floats with len(y). Strings should be "min" or "max" to show whether we minimize or maximize this target. If left empty, all targets will be maximized.
-        Example: ["min"],["max"], [-1(any negative number for minimizing)] or [1(any positive number for maximizing)] for a single objective optimization problem, 
-        ["max", "min"] or [-1, 1] for a multi-objective optimization problem with two objectives, etc.
+        optim_direc : list of strings or weights as floats with len(y). 
+            Strings should be "min" or "max" to show whether we minimize or maximize this target. If left empty, all targets will be maximized.
+            Example: ["min"],["max"], [-1(any negative number for minimizing)] or [1(any positive number for maximizing)] for a single objective optimization problem, 
+            ["max", "min"] or [-1, 1] for a multi-objective optimization problem with two objectives, etc.
 
-        cat_dims : list of names corresponding to the columns of the input X that should be considered categorical features.
+        cat_dims : list of strings
+            Names corresponding to the columns of the input X that should be considered categorical features.
 
-        model_type : str, one of ["Single-Task GP", "Mixed Single-Task GP", "SAASBO", "HED"]. 
-        If None, will default to "Single-Task GP" when no categorical features are present, otherwise will default to "Mixed Single-Task GP".
+        model_type : string
+            Can be one of ["Single-Task GP", "Mixed Single-Task GP", "SAASBO", "HED"]. 
+            If None, will default to "Single-Task GP" when no categorical features are present, otherwise will default to "Mixed Single-Task GP".
 
         Returns
         -------
-        self : BayesianOptimization instance, fitted with the training data.
+        self : BayesianOptimization instance
+            Fitted with the training data.
         
         Extra Information
         ----------
@@ -496,40 +805,54 @@ class BayesianOptimization(FeaturePreprocessor, AcquisitionHandler):
 
         return self
 
-    def candidates(self, q : int, acq_func_name: str = None, bounds : list[int | float] = None, export_df: bool = False,
-                   q_sampling_method : str = None, input_weights : list[float] = None, optim_method="Multi-Start"):
+    def candidates(
+        self, q : int,
+        acq_func_name: str = None,
+        bounds : list[int | float] = None,
+        export_df: bool = False,
+        q_sampling_method : str = None,
+        input_weights : list[float] = None,
+        optim_method="Multi-Start"
+        ) -> pd.DataFrame | tuple[np.ndarray, np.ndarray]:
         """
         Optimizes an acquisition function to return candidates for the next iteration of Bayesian optimization.
 
         Parameters
         ----------
-        q : integer, number of candidates to return.
+        q : integer
+            Number of candidates to return.
 
-        acq_func_name : string, name of the acquisition function to use. 
-        If None, will default to "LogEI" for single-objective optimization and "EHVI" for multi-objective optimization.
+        acq_func_name : string
+            Name of the acquisition function to use. 
+            If None, will default to "LogEI" for single-objective optimization and "EHVI" for multi-objective optimization.
 
-        bounds : list of 2 lists the first contating the lower bounds for each variable the latter the upper bounds for each variable.
-        Example: [[1e-5, 1e-5, 1e-5],[14, 1, 2]] for data with 3 features.
+        bounds : list of 2 lists
+            The first contating the lower bounds for each variable the latter the upper bounds for each variable.
+            Example: [[1e-5, 1e-5, 1e-5],[14, 1, 2]] for data with 3 features.
 
-        export_df : bool, if True, will return a pandas DataFrame with the suggested candidates and their predidicttions for the features.
+        export_df : bool
+            If True, will return a pandas DataFrame with the suggested candidates and their predidicttions for the target values.
 
-        q_sampling_method : string, The user can choose between "Monte Carlo" and "Believer".
-        If None, will default to "Monte Carlo" if q > 1 and "Believer" if q = 1.
+        q_sampling_method : string
+            The user can choose between "Monte Carlo" and "Believer".
+            If None, will default to "Monte Carlo" if q > 1 and "Believer" if q = 1.
 
-        input_weights : list of floats, weights for each feature in the input space.
-        If None, will not use a cost model.
+        input_weights : list of floats
+            Weights for each feature in the input space.
+            If None, will not use a cost model.
 
-        optim_method : string, the optimization method to use for the acquisition function optimization.
-        Can be "Multi-Start" or "Sequential Greedy".
+        optim_method : string
+            The optimization method to use for the acquisition function optimization.
+            Can be "Multi-Start" or "Sequential Fixed Subspace".
 
         Returns
         -------
         If export_df is True:
-        Returns a pandas DataFrame with the suggested candidates and their predictions.
+            Returns a pandas DataFrame with the suggested candidates and their predictions.
         
         Otherwise, returns a tuple of two numpy arrays:
-        candidate : numpy array of shape (q, n_features) with the suggested candidates.
-        prediction : numpy array of shape (q, n_targets) with the predictions of the features for the suggested candidates.
+            candidate : numpy array of shape (q, n_features) with the suggested candidates.
+            prediction : numpy array of shape (q, n_targets) with the predictions of the features for the suggested candidates.
 
         Extra Information
         ----------
@@ -540,7 +863,7 @@ class BayesianOptimization(FeaturePreprocessor, AcquisitionHandler):
             q_sampling_method = "Monte Carlo"
         else:
             seq_dict = {}
-        if optim_method == "Sequential Greedy" and self.model_type != "Mixed Single-Task GP":
+        if optim_method == "Sequential Fixed Subspace" and self.model_type != "Mixed Single-Task GP":
             self.clean_up_method = snap_and_reverse_one_hot
         
         q, analytic_iter_n = self._acq_func_determiner(acq_func_name=acq_func_name,

@@ -29,7 +29,7 @@ class ingredient_cost(CostModel):
         self.fixed_cost = fixed_cost
         self.model =  AffineFidelityCostModel(fidelity_weights=weights, fixed_cost=fixed_cost)
 
-    def forward(self, X):
+    def forward(self, X) -> Tensor:
         return self.model(X)[:, 0]
 
 class AnalyticAcquisitionFunctionWithCost(AnalyticAcquisitionFunction):
@@ -44,7 +44,7 @@ class AnalyticAcquisitionFunctionWithCost(AnalyticAcquisitionFunction):
         self.cost_model = cost_model
         self.acqf = acqf
 
-    def forward(self, X):
+    def forward(self, X) -> Tensor:
         return self.acqf(X) - self.cost_model(X)[:, 0]
     
 class MCAcquisitionFunctionWithCost(SampleReducingMCAcquisitionFunction):
