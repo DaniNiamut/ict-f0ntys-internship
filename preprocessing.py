@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score
@@ -7,7 +8,38 @@ from data_generation import sigmoid_fn, linear_fn, exp_fn, dec_exp_fn
 import string
 
 
-def plot_well_data(time_column, y_true, y_filtered, y_fit, norm_react_rates, wells):
+def plot_well_data(
+    time_column : np.ndarray | list[float],
+    y_true : np.ndarray | list[float],
+    y_filtered : np.ndarray | list[float],
+    y_fit : np.ndarray | list[float],
+    norm_react_rates : np.ndarray | list[float],
+    wells : list[str]
+    ) -> None:
+    """
+    Plots the yield data, the filtered data and a fit for all wells in a grid layout.
+    Also incuding the normalized reaction rates and well names each subplot.
+
+    Parameters
+    ----------
+    time_column : numpy array or list of floats
+        The time values corresponding to the yield data.
+    
+    y_true : numpy array or list of floats
+        The real yield data for each well.
+    
+    y_filtered : numpy array or list of floats
+        The filtered yield data for each well.
+    
+    y_fit : numpy array or list of floats
+        The predicted yield data for each well.
+    
+    norm_react_rates : numpy array or list of floats
+        The normalized reaction rates for each well.
+
+    wells : list of str
+        Names of each well formatted as 'A1', 'B2', etc.
+    """
     max_row = max(w[0] for w in wells)
     max_col = max(int(w[1:]) for w in wells)
 
@@ -28,7 +60,7 @@ def plot_well_data(time_column, y_true, y_filtered, y_fit, norm_react_rates, wel
 
             if well_name in well_to_index:
                 idx = well_to_index[well_name]
-                ax.plot(time_column, y_true[:, idx], label='Raw', color='#FF7F0E')      # orange
+                ax.plot(time_column, y_true[:, idx], label='Raw', color="#FF7700")      # orange
                 ax.plot(time_column, y_filtered[:, idx], '--',  label='Filtered', color='#4CAF50', alpha=0.5)  # green
                 ax.plot(time_column, y_fit[:, idx], '-', label='Fit', color='#257BB6', alpha=0.5)       # blue
 
@@ -55,7 +87,29 @@ def plot_well_data(time_column, y_true, y_filtered, y_fit, norm_react_rates, wel
     plt.tight_layout()
     plt.show()
 
-def least_squares_fitter(t_vals, y_vals):
+def least_squares_fitter(t_vals, y_vals) -> tuple[dict, list[float]]:
+    """
+    Fits the given time and yield values to several models: sigmoid, linear, exponential, and decaying exponential.
+
+    Parameters
+    ----------
+    t_vals : Numpy array or List of Floats
+        The time values corresponding to the yield data.
+
+    y_vals : Numpy array or List of Floats
+        The yield values to fit against the time values.
+
+    Returns
+    -------
+    params : Dictionary
+        A dictionary containing the parameters of the fitted models.
+        Keys are 'sigmoid', 'linear', 'exp', and 'dec exp' with their respective parameters as tuples.
+    
+    scores : List of floats
+        A list of R-squared scores for each fitted model, indicating the goodness of fit.
+        The order of scores corresponds to the order of models in the params dictionary whuch is:
+        ['sigmoid', 'linear', 'exp', 'dec exp'].
+    """
     t_vals = np.asarray(t_vals).reshape(-1)
     y_vals = np.asarray(y_vals).reshape(-1)
 
@@ -129,10 +183,53 @@ def least_squares_fitter(t_vals, y_vals):
 
     return params, scores
 
-def preprocessor(settings_df, raw_df, pos_wells, override_wells=None,
-                 plot=False, return_coef=False, return_function_type=True):
+def preprocessor(
+    settings_df : pd.DataFrame,
+    raw_df : pd.DataFrame,
+    pos_wells : list[str] | None = None,
+    override_wells: list[str] | None = None,
+    plot : bool = False,
+    return_coef : bool = True,
+    return_function_type : bool = True
+    ) -> pd.DataFrame:
     # Only keep linear and decaying exponential parameters
+    """
+    Preprocesses the raw yield data from a DataFrame, fits models to the data, and returns a DataFrame with the results.
 
+    Parameters
+    ----------
+    settings_df : pandas DataFrame
+        DataFrame containing settings for each well, indexed by well names.
+
+    raw_df : pandas DataFrame
+        DataFrame containing the original data.
+
+    pos_wells : list of strings
+        List of well names to use for normalization of reaction rates. If None, all wells are used.
+    
+    override_wells : list of strings
+        List of well names to override the the wells that we dont want to take into consderation DataFrame.
+        If None, no override is performed. (Currently not implemented)
+
+    plot : bool
+        If True, plots the yield data, filtered data, and fitted models for each well.
+
+    return_coef : bool
+        If True, includes the fitted coefficients in the returned DataFrame.
+
+    return_function_type : bool
+        If True, includes the type of function used for fitting in the returned DataFrame.
+
+    Returns
+    -------
+    pandas DataFrame
+        A DataFrame containing the processed data with the following columns:
+        - 'well': Well names.
+        - 'norm_yield_grad': Normalized reaction rates.
+        - 'max_yield': Maximum yield for each well.
+        - 'function_type': Type of function used for fitting (if return_function_type is True).
+        - Coefficients of the fitted models (if return_coef is True).
+    """
     params_names = ['linear_a', 'linear_b', 'dec_exp_a', 'dec_exp_b', 'dec_exp_c', 'dec_exp_d']
     params_indices = {
         'linear': [0, 1],

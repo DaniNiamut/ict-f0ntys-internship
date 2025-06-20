@@ -65,13 +65,13 @@ def snap_categories(
 
     Parameters  
     ----------
-    arr : numpy array or dataframe
+    arr : Numpy array or Dataframe
         Input data with shape (n_samples, n_features) to be snapped to valid categories.
 
-    var_names : list of strings
+    var_names : List of Strings
         Names of the variables in the array. var_names has to be the same length as n_features in arr.
 
-    cat_vals : dictionary
+    cat_vals : Dictionary
         The keys are the names of each catregory and the values are lists of valid values for that category. 
 
     Returns
@@ -101,16 +101,16 @@ def reverse_one_hot(
 
     Parameters
     ----------
-    arr : numpy array or dataframe
+    arr : Numpy array or Dataframe
         Input data with shape (n_samples, n_features) to be reversed from one-hot encoding to original categories.
 
-    var_names : list of strings
+    var_names : List of Strings
         Names of the variables in the array. var_names has to be the same length as n_features in arr.
 
-    cat_cols : list of strings
+    cat_cols : List of Strings
         Names of the categorical columns.
 
-    var_names_original : list of strings
+    var_names_original : List of Strings
         Containing the original order of the variable names.
 
     Returns
@@ -144,10 +144,10 @@ def snap_and_reverse_one_hot(
 
     Parameters
     ----------
-    arr : numpy array or dataframe
+    arr : Numpy array or Dataframe
         Input data with shape (n_samples, n_features) of input data to be snapped to valid categories and reversed from one-hot encoding.
 
-    var_names : list of strings
+    var_names : List of Strings
         Names of the variables in the array. var_names has to be the same length as n_features in arr.
 
     cat_vals : dictionary

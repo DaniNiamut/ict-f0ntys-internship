@@ -6,6 +6,9 @@ import torch.optim as optim
 from torch.utils.data import WeightedRandomSampler
 
 def get_rank_weights(outputs, k):
+    """
+    
+    """
     outputs_argsort = np.argsort(-np.asarray(outputs))
     ranks = np.argsort(outputs_argsort)
     return 1 / (k * (1 + ranks))
@@ -35,7 +38,9 @@ class Autoencoder(nn.Module):
         self.latent_dim = n_components
 
     def build(self, input_dim):
-
+        """
+        Builds the encoder and decoder networks.
+        """
         self.encoder = nn.Sequential(
             nn.Linear(input_dim, 256),
             nn.ReLU(),
@@ -127,6 +132,40 @@ class Autoencoder(nn.Module):
         return self.transform(X)
 
 class WeightedAutoencoder(nn.Module):
+    """
+    A weighted autoencoder that incorporates weights based on the y values.
+    This model was inspired by the paper "Sample-Efficient Optimization in the Latent Space of
+    Deep Generative Models via Weighted Retraining" by Austin Tripp, Eric Daxberger, and Jose M. Hernandez-Lobato.
+
+    For more details refer to:
+    https://proceedings.neurips.cc/paper_files/paper/2020/file/81e3225c6ad49623167a4309eb4b2e75-Supplemental.pdf
+
+    Attributes
+    ----------
+    encoder : nn.Sequential
+        Neural network encoder that maps input to latent space.
+
+    decoder : nn.Sequential
+        Neural network decoder that reconstructs input from latent space.
+
+    fc_mu : nn.Linear
+        Linear layer that predicts the mean of the latent distribution.
+
+    fc_logvar : nn.Linear
+        Linear layer that predicts the log-variance of the latent distribution.
+
+    weights_k : float
+        Scaling parameter used in weighting samples based on y.
+
+    latent_dim : int
+        Dimensionality of the latent representation (number of components).
+
+    input_mean : np.ndarray
+        Mean of the training data, used for input standardization.
+
+    input_std : np.ndarray
+        Standard deviation of the training data, used for input standardization.
+    """
     def __init__(self, n_components=32):
         super().__init__()
         self.encoder = None
@@ -137,7 +176,7 @@ class WeightedAutoencoder(nn.Module):
         self.latent_dim = n_components
 
     def build(self, input_dim):
-
+        """ Builds the encoder and decoder networks."""
         self.encoder = nn.Sequential(
             nn.Linear(input_dim, 256),
             nn.ReLU(),
@@ -161,11 +200,17 @@ class WeightedAutoencoder(nn.Module):
         )
 
     def _reparameterize(self, mu, logvar):
+        """
+        Performs the Reparameterization trick.
+        """
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
         return mu + eps * std
 
     def forward(self, x):
+        """
+        Forward pass through the autoencoder.
+        """
         x_enc = self.encoder(x)
         mu = self.fc_mu(x_enc)
         logvar = self.fc_logvar(x_enc)
@@ -174,12 +219,18 @@ class WeightedAutoencoder(nn.Module):
         return recon, mu, logvar
 
     def _weights(self, X, y):
+        """
+        Calculates the weights based on the y values.
+        """
         ranked_weights = get_rank_weights(y, self.weights_k)
         normed_weights = ranked_weights / np.mean(ranked_weights)
         weights, X = reduce_weight_variance(normed_weights, X)
         return weights, X
 
     def fit(self, X, y, optim_direc=None):
+        """
+        Fits the weighted autoencoder to the data X and labels y.
+        """
         self.input_mean = X.mean(axis=0)
         self.input_std = X.std(axis=0) + 1e-8  # add epsilon to avoid div by zero
 
@@ -194,12 +245,13 @@ class WeightedAutoencoder(nn.Module):
             if len(optim_direc) > 1:
                 y = y.sum(axis=1)
 
+        # We are performing percetile cutoff to remove outliers
         perc = np.percentile(y, 50)
         percentile_cutoff = (y >= perc).flatten()
         X = X[percentile_cutoff]
         y = y[percentile_cutoff]
+        # We are calculating the weights using y accroding to the aforementioned paper
         weights, X = self._weights(X, y)
-
         input_dim = X.shape[1]
         self.build(input_dim)
         X_tensor = torch.tensor(X, dtype=torch.float32)
@@ -233,6 +285,9 @@ class WeightedAutoencoder(nn.Module):
                 break
 
     def transform(self, X):
+        """ 
+        Transforms the input data X into the latent space representation.
+        """
         X = (X - self.input_mean) / self.input_std
         X_tensor = torch.tensor(X, dtype=torch.float32)
         with torch.no_grad():

@@ -12,7 +12,7 @@ def piecewise_yield_time_x(x_scalar, t, params, mu):
     x_scalar = np.asarray(x_scalar)  # shape (n_obs,)
     mu = np.sort(np.asarray(mu))     # ensure mu is sorted
     breakpoints = (mu[:-1] + mu[1:]) / 2  # midpoints between mu_i
-
+    
     # Append -inf and +inf to make interval comparison easier
     all_bounds = np.concatenate(([-np.inf], breakpoints, [np.inf]))  # shape (n+1,)
 
